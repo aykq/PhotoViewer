@@ -1,50 +1,79 @@
 ﻿using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Controls.Primitives;
-using Microsoft.UI.Xaml.Data;
-using Microsoft.UI.Xaml.Input;
-using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Navigation;
-using Microsoft.UI.Xaml.Shapes;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices.WindowsRuntime;
-using Windows.ApplicationModel;
+using PhotoViewer.Views;
+using Microsoft.Windows.AppLifecycle;
 using Windows.ApplicationModel.Activation;
-using Windows.Foundation;
-using Windows.Foundation.Collections;
-
-// To learn more about WinUI, the WinUI project structure,
-// and more about our project templates, see: http://aka.ms/winui-project-info.
+using System;
+using WinRT.Interop;
+using System.Runtime.InteropServices; // DLL Import için gerekli
 
 namespace PhotoViewer
 {
-    /// <summary>
-    /// Provides application-specific behavior to supplement the default Application class.
-    /// </summary>
     public partial class App : Application
     {
         private Window? _window;
 
-        /// <summary>
-        /// Initializes the singleton application object.  This is the first line of authored code
-        /// executed, and as such is the logical equivalent of main() or WinMain().
-        /// </summary>
+        // --- WIN32 API TANIMLAMALARI (Zorunlu Odak İçin) ---
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        private const int SW_RESTORE = 9;
+
         public App()
         {
-            InitializeComponent();
+            this.InitializeComponent();
         }
 
-        /// <summary>
-        /// Invoked when the application is launched.
-        /// </summary>
-        /// <param name="args">Details about the launch request and process.</param>
         protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
         {
             _window = new MainWindow();
+
+            // 1. Uygulama açıkken gelecek yeni dosya açma isteklerini dinle
+            AppInstance.GetCurrent().Activated += App_Activated;
+
+            // 2. İlk açılıştaki dosyayı kontrol et
+            var activatedArgs = AppInstance.GetCurrent().GetActivatedEventArgs();
+            CheckForFileActivation(activatedArgs);
+
             _window.Activate();
+        }
+
+        private void App_Activated(object sender, AppActivationArguments e)
+        {
+            // UI güncellemelerini ana iş parçacığına gönder
+            _window?.DispatcherQueue.TryEnqueue(() =>
+            {
+                CheckForFileActivation(e);
+
+                if (_window != null)
+                {
+                    var hwnd = WindowNative.GetWindowHandle(_window);
+
+                    // Önce pencereyi eski boyutuna getir (minimize ise), sonra en öne çek
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd);
+
+                    _window.Activate();
+                }
+            });
+        }
+
+        private void CheckForFileActivation(AppActivationArguments args)
+        {
+            if (args.Kind == ExtendedActivationKind.File)
+            {
+                var fileArgs = args.Data as IFileActivatedEventArgs;
+                if (fileArgs != null && fileArgs.Files.Count > 0)
+                {
+                    var filePath = fileArgs.Files[0].Path;
+                    if (_window is MainWindow mainWindow)
+                    {
+                        _ = mainWindow.ViewModel.LoadPhotoAsync(filePath);
+                    }
+                }
+            }
         }
     }
 }

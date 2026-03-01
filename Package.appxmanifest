@@ -43,6 +43,24 @@
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
         <uap:SplashScreen Image="Assets\SplashScreen.png" />
       </uap:VisualElements>
+		<Extensions>
+			<uap:Extension Category="windows.fileTypeAssociation">
+				<uap:FileTypeAssociation Name="myphotoviewer">
+					<uap:SupportedFileTypes>
+						<uap:FileType>.jpg</uap:FileType>
+						<uap:FileType>.png</uap:FileType>
+						<uap:FileType>.webp</uap:FileType>
+						<uap:FileType>.gif</uap:FileType>
+						<uap:FileType>.jxl</uap:FileType>
+						<uap:FileType>.heic</uap:FileType>
+						<uap:FileType>.heif</uap:FileType>
+						<uap:FileType>.tga</uap:FileType>
+					</uap:SupportedFileTypes>
+					<uap:DisplayName>My Photo Viewer</uap:DisplayName>
+					<uap:EditFlags OpenIsSafe="true" />
+				</uap:FileTypeAssociation>
+			</uap:Extension>
+		</Extensions>
     </Application>
   </Applications>
 
