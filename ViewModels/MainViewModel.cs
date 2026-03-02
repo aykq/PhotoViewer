@@ -15,13 +15,10 @@ namespace PhotoViewer.ViewModels
         private readonly ImageLoaderService _imageLoader;
         private readonly MetadataService _metadataService;
 
-        // private ve alt çizgili field kullanıyoruz. 
-        // Toolkit buradan otomatik olarak 'DisplayImage' ve 'StatusMessage' üretecek.
+        // private ve alt çizgili field kullanıyoruz.
+        // Toolkit buradan otomatik olarak 'DisplayImage' üretecek.
         [ObservableProperty]
         private WriteableBitmap? _displayImage;
-
-        [ObservableProperty]
-        private string _statusMessage = string.Empty;
 
         public ObservableCollection<ExifData> ExifMetadata { get; } = new();
 
@@ -29,7 +26,6 @@ namespace PhotoViewer.ViewModels
         {
             _imageLoader = new ImageLoaderService();
             _metadataService = new MetadataService();
-            _statusMessage = "Lütfen bir resim dosyası seçin.";
         }
 
         [RelayCommand]
@@ -39,8 +35,7 @@ namespace PhotoViewer.ViewModels
 
             try
             {
-                // UI'daki TextBlock 'StatusMessage' (Büyük harf) özelliğine bağlıdır.
-                StatusMessage = "Yükleniyor...";
+                // image loading
 
                 DisplayImage = await _imageLoader.LoadImageAsync(filePath);
 
@@ -51,11 +46,12 @@ namespace PhotoViewer.ViewModels
                     ExifMetadata.Add(item);
                 }
 
-                StatusMessage = "Tamamlandı.";
+                // completed
             }
             catch (Exception ex)
             {
-                StatusMessage = $"Hata: {ex.Message}";
+                // report error via debug/log; do not expose raw exception text to UI
+                System.Diagnostics.Debug.WriteLine($"LoadPhotoAsync error: {ex}");
             }
         }
     }

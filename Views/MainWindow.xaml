@@ -43,16 +43,22 @@
                 </Image.RenderTransform>
             </Image>
 
-            <StackPanel VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,20">
-                <Button Content="Fotoğraf Seç" 
-                        Click="SelectFile_Click" 
-                        Style="{StaticResource AccentButtonStyle}" 
-                        Opacity="0.8"/>
-                <TextBlock Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}" 
-                           HorizontalAlignment="Center" 
-                           Margin="0,10,0,0" 
-                           Foreground="Gray"/>
-            </StackPanel>
+            <!-- Zoom indicator (appears on zoom actions) -->
+            <Border x:Name="ZoomIndicatorBorder"
+                    Visibility="Collapsed"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top"
+                    Margin="20,60,20,0"
+                    Background="#AA000000"
+                    CornerRadius="8"
+                    Padding="8"
+                    Opacity="0">
+                <TextBlock x:Name="ZoomIndicatorText"
+                           Foreground="White"
+                           FontWeight="SemiBold"
+                           FontSize="14"
+                           Text="0%"/>
+            </Border>
         </Grid>
 
         <Border x:Name="InfoPanel"

@@ -5,8 +5,6 @@ using Microsoft.UI.Xaml.Media.Animation;
 using PhotoViewer.ViewModels;
 using System;
 using System.Runtime.InteropServices;
-using Windows.Storage.Pickers;
-using WinRT.Interop;
 
 namespace PhotoViewer.Views
 {
@@ -16,6 +14,7 @@ namespace PhotoViewer.Views
 
         private bool _isPanning = false;
         private Windows.Foundation.Point _lastPointerPosition;
+        private System.Threading.CancellationTokenSource? _zoomCts;
         private bool _isInfoPanelOpen = false;
         private const double PanelWidth = 350;
 
@@ -120,30 +119,7 @@ namespace PhotoViewer.Views
 
         // --- DİĞER METODLAR (IMAGE/PICKER) ---
         // (Buradaki SelectFile_Click, ResetImageTransforms, Pointer metodları aynı kalacak)
-        private async void SelectFile_Click(object sender, RoutedEventArgs e)
-        {
-            var picker = new FileOpenPicker();
-            var hwnd = WindowNative.GetWindowHandle(this);
-            InitializeWithWindow.Initialize(picker, hwnd);
-            picker.ViewMode = PickerViewMode.Thumbnail;
-            picker.SuggestedStartLocation = PickerLocationId.PicturesLibrary;
-            picker.FileTypeFilter.Add(".jpg");
-            picker.FileTypeFilter.Add(".png");
-            picker.FileTypeFilter.Add(".gif");
-            picker.FileTypeFilter.Add(".tga");
-            picker.FileTypeFilter.Add(".webp");
-            picker.FileTypeFilter.Add(".tiff");
-            picker.FileTypeFilter.Add(".heic");
-            picker.FileTypeFilter.Add(".heif");
-            picker.FileTypeFilter.Add(".jxl");
-
-            var file = await picker.PickSingleFileAsync();
-            if (file != null)
-            {
-                ResetImageTransforms();
-                await ViewModel.LoadPhotoAsync(file.Path);
-            }
-        }
+        // File picker removed (UI no longer exposes select button).
 
         private void ResetImageTransforms()
         {
@@ -151,6 +127,9 @@ namespace PhotoViewer.Views
             ImageTransform.ScaleX = 1; ImageTransform.ScaleY = 1;
             ImageTransform.TranslateX = 0; ImageTransform.TranslateY = 0;
             ImageTransform.CenterX = 0; ImageTransform.CenterY = 0;
+
+            // hide zoom indicator when reset
+            HideZoomIndicator();
         }
 
         private void MainImage_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
@@ -172,6 +151,8 @@ namespace PhotoViewer.Views
             // Adjust translation so the point under the cursor stays at same screen position
             ImageTransform.TranslateX += (p.X - origin.X) * (oldScale - newScale);
             ImageTransform.TranslateY += (p.Y - origin.Y) * (oldScale - newScale);
+
+            ShowZoomIndicator(newScale);
             e.Handled = true;
         }
 
@@ -224,6 +205,52 @@ namespace PhotoViewer.Views
             ImageTransform.ScaleX = newScale; ImageTransform.ScaleY = newScale;
             ImageTransform.TranslateX += (p.X - origin.X) * (oldScale - newScale);
             ImageTransform.TranslateY += (p.Y - origin.Y) * (oldScale - newScale);
+
+            ShowZoomIndicator(newScale);
+        }
+
+        private void ShowZoomIndicator(double scale)
+        {
+            try
+            {
+                _zoomCts?.Cancel();
+                _zoomCts = new System.Threading.CancellationTokenSource();
+                var ct = _zoomCts.Token;
+
+                ZoomIndicatorText.Text = $"{scale * 100:0}%";
+                ZoomIndicatorBorder.Visibility = Visibility.Visible;
+                ZoomIndicatorBorder.Opacity = 1;
+
+                // Hide after 1.5s unless cancelled
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    try
+                    {
+                        await System.Threading.Tasks.Task.Delay(1500, ct);
+                        if (ct.IsCancellationRequested) return;
+                        // fade out
+                        DispatcherQueue.TryEnqueue(async () =>
+                        {
+                            for (int i = 0; i < 8; i++)
+                            {
+                                ZoomIndicatorBorder.Opacity -= 0.12;
+                                await System.Threading.Tasks.Task.Delay(20);
+                            }
+                            ZoomIndicatorBorder.Opacity = 0;
+                            ZoomIndicatorBorder.Visibility = Visibility.Collapsed;
+                        });
+                    }
+                    catch (OperationCanceledException) { }
+                }, ct);
+            }
+            catch { }
+        }
+
+        private void HideZoomIndicator()
+        {
+            _zoomCts?.Cancel();
+            ZoomIndicatorBorder.Opacity = 0;
+            ZoomIndicatorBorder.Visibility = Visibility.Collapsed;
         }
     }
 }
