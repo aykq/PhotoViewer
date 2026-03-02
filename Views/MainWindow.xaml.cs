@@ -147,8 +147,10 @@ namespace PhotoViewer.Views
 
         private void ResetImageTransforms()
         {
+            // Reset scale and translation and clear any custom centers so image returns to layout-centered position
             ImageTransform.ScaleX = 1; ImageTransform.ScaleY = 1;
             ImageTransform.TranslateX = 0; ImageTransform.TranslateY = 0;
+            ImageTransform.CenterX = 0; ImageTransform.CenterY = 0;
         }
 
         private void MainImage_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
@@ -156,10 +158,20 @@ namespace PhotoViewer.Views
             var pointerPoint = e.GetCurrentPoint(MainImage);
             var delta = pointerPoint.Properties.MouseWheelDelta;
             double zoomFactor = delta > 0 ? 1.1 : 0.9;
-            ImageTransform.CenterX = pointerPoint.Position.X;
-            ImageTransform.CenterY = pointerPoint.Position.Y;
-            double newScale = ImageTransform.ScaleX * zoomFactor;
-            if (newScale >= 0.1 && newScale <= 10) { ImageTransform.ScaleX = newScale; ImageTransform.ScaleY = newScale; }
+            double oldScale = ImageTransform.ScaleX;
+            double newScale = oldScale * zoomFactor;
+            if (!(newScale >= 0.1 && newScale <= 10)) { e.Handled = true; return; }
+
+            // Compute origin (because RenderTransformOrigin is 0.5,0.5)
+            var origin = new Windows.Foundation.Point(MainImage.ActualWidth * 0.5, MainImage.ActualHeight * 0.5);
+            var p = pointerPoint.Position;
+
+            // Apply scale
+            ImageTransform.ScaleX = newScale; ImageTransform.ScaleY = newScale;
+
+            // Adjust translation so the point under the cursor stays at same screen position
+            ImageTransform.TranslateX += (p.X - origin.X) * (oldScale - newScale);
+            ImageTransform.TranslateY += (p.Y - origin.Y) * (oldScale - newScale);
             e.Handled = true;
         }
 
@@ -193,8 +205,25 @@ namespace PhotoViewer.Views
 
         private void MainImage_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
         {
-            if (ImageTransform.ScaleX > 1.0) ResetImageTransforms();
-            else { ImageTransform.ScaleX = 2.5; ImageTransform.ScaleY = 2.5; }
+            var targetScale = ImageTransform.ScaleX > 1.0 ? 1.0 : 2.5;
+
+            // If toggling back to 1.0 just reset everything
+            if (Math.Abs(targetScale - 1.0) < 0.001)
+            {
+                ResetImageTransforms();
+                return;
+            }
+
+            // Zoom in centered at double-click position
+            var p = e.GetPosition(MainImage);
+            double oldScale = ImageTransform.ScaleX;
+            double newScale = targetScale;
+
+            var origin = new Windows.Foundation.Point(MainImage.ActualWidth * 0.5, MainImage.ActualHeight * 0.5);
+
+            ImageTransform.ScaleX = newScale; ImageTransform.ScaleY = newScale;
+            ImageTransform.TranslateX += (p.X - origin.X) * (oldScale - newScale);
+            ImageTransform.TranslateY += (p.Y - origin.Y) * (oldScale - newScale);
         }
     }
 }
