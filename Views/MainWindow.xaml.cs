@@ -123,10 +123,30 @@ namespace PhotoViewer.Views
 
         private void ResetImageTransforms()
         {
-            // Reset scale and translation and clear any custom centers so image returns to layout-centered position
-            ImageTransform.ScaleX = 1; ImageTransform.ScaleY = 1;
-            ImageTransform.TranslateX = 0; ImageTransform.TranslateY = 0;
-            ImageTransform.CenterX = 0; ImageTransform.CenterY = 0;
+            // Defer reset to ensure layout is stable, then clear transforms so image returns to layout-centered position
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                try
+                {
+                    // Ensure transform origin is centered
+                    MainImage.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+
+                    ImageTransform.ScaleX = 1;
+                    ImageTransform.ScaleY = 1;
+
+                    // Clear translations
+                    ImageTransform.TranslateX = 0;
+                    ImageTransform.TranslateY = 0;
+
+                    // Clear any manual centers
+                    ImageTransform.CenterX = 0;
+                    ImageTransform.CenterY = 0;
+
+                    // Force a layout pass
+                    MainImage.UpdateLayout();
+                }
+                catch { }
+            });
 
             // hide zoom indicator when reset
             HideZoomIndicator();
