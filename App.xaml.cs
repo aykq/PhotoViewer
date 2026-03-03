@@ -37,7 +37,21 @@ namespace PhotoViewer
             var activatedArgs = AppInstance.GetCurrent().GetActivatedEventArgs();
             CheckForFileActivation(activatedArgs);
 
-            _window.Activate();
+            // Activate the window. In some environments the visual root may not be ready
+            // immediately; if Activate throws due to an internal null, defer activation
+            // to the window's dispatcher to avoid crashing at startup.
+            try
+            {
+                _window.Activate();
+            }
+            catch (NullReferenceException)
+            {
+                // Defer activation to allow the visual tree to finish initializing.
+                _window?.DispatcherQueue?.TryEnqueue(() =>
+                {
+                    try { _window.Activate(); } catch { }
+                });
+            }
         }
 
         private void App_Activated(object sender, AppActivationArguments e)
