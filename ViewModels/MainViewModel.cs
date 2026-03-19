@@ -14,25 +14,25 @@ namespace PhotoViewer.ViewModels
         private readonly MetadataService _metadataService;
 
         [ObservableProperty]
-        private WriteableBitmap? _displayImage;
+        public partial WriteableBitmap? DisplayImage { get; set; }
 
         [ObservableProperty]
-        private string? _camera;
+        public partial string? Camera { get; set; }
 
         [ObservableProperty]
-        private string? _resolution;
+        public partial string? Resolution { get; set; }
 
         [ObservableProperty]
-        private string? _fileSize;
+        public partial string? FileSize { get; set; }
 
         [ObservableProperty]
-        private string? _format;
+        public partial string? Format { get; set; }
 
         [ObservableProperty]
-        private string? _coordinates;
+        public partial string? Coordinates { get; set; }
 
         [ObservableProperty]
-        private string? _gpsAltitude;
+        public partial string? GpsAltitude { get; set; }
 
         public MainViewModel()
         {

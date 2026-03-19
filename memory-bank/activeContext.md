@@ -14,6 +14,10 @@ Proje temizliği ve stabilizasyon çalışmaları tamamlandı. Memory Bank Phase
   - AnimatePanel metodu sadeleştirildi (kullanılmayan DoubleAnimation/Storyboard kodları kaldırıldı)
   - progress.md Phase 0-1-2-3 formatında güncellendi
   - systemPatterns.md güncellendi (mevcut yapıya uygun)
+- **2026-03-19**: Derleme warning'leri giderildi
+  - `Magick.NET-Q8-AnyCPU` güncellendi (NU1902/NU1903)
+  - `MVVMTK0045` için `ObservableProperty` alanları `partial property` formuna çevrildi
+  - `CS8622` için `App_Activated` nullability imzası düzeltildi
 
 ## Next Steps
 

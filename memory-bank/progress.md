@@ -17,7 +17,7 @@
 ### Kullanılan Kütüphaneler
 - Microsoft.WindowsAppSDK 1.8.260209005
 - CommunityToolkit.Mvvm 8.4.0
-- Magick.NET-Q8-AnyCPU 14.10.3
+- Magick.NET-Q8-AnyCPU 14.11.0
 - MetadataExtractor 2.9.0
 
 ---

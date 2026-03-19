@@ -1,4 +1,4 @@
-﻿using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml;
 using PhotoViewer.Views;
 using Microsoft.Windows.AppLifecycle;
 using Windows.ApplicationModel.Activation;
@@ -54,7 +54,7 @@ namespace PhotoViewer
             }
         }
 
-        private void App_Activated(object sender, AppActivationArguments e)
+        private void App_Activated(object? sender, AppActivationArguments e)
         {
             _window?.DispatcherQueue.TryEnqueue(() =>
             {

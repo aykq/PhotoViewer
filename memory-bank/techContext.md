@@ -7,7 +7,7 @@
 | .NET | 8.0 | Runtime |
 | Windows App SDK | 1.8.260209005 | WinUI 3 UI Framework |
 | CommunityToolkit.Mvvm | 8.4.0 | MVVM pattern implementasyonu |
-| Magick.NET-Q8-AnyCPU | 14.10.3 | Görüntü işleme (rotate, crop) |
+| Magick.NET-Q8-AnyCPU | 14.11.0 | Görüntü işleme (rotate, crop) |
 | MetadataExtractor | 2.9.0 | EXIF metadata okuma |
 | WinUI 3 | - | Kullanıcı arayüzü |
 
