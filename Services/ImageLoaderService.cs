@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -16,6 +16,8 @@ namespace PhotoViewer.Services
             {
                 using (var image = new MagickImage(filePath))
                 {
+                    // Keep UI consistent with what we'll later save/crop/rotate.
+                    image.AutoOrient();
                     image.Format = MagickFormat.Bgra;
                     return new
                     {

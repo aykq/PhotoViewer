@@ -15,6 +15,65 @@
         </Grid.ColumnDefinitions>
 
         <Grid Grid.Column="0" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+            <!-- Image layer -->
+            <Grid>
+                <Image x:Name="MainImage"
+                       Source="{x:Bind ViewModel.DisplayImage, Mode=OneWay}"
+                       Stretch="Uniform"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       RenderTransformOrigin="0.5,0.5"
+                       Margin="20"
+                       SizeChanged="MainImage_SizeChanged"
+                       PointerWheelChanged="MainImage_PointerWheelChanged"
+                       PointerPressed="MainImage_PointerPressed"
+                       PointerMoved="MainImage_PointerMoved"
+                       PointerReleased="MainImage_PointerReleased"
+                       DoubleTapped="MainImage_DoubleTapped">
+                    <Image.RenderTransform>
+                        <CompositeTransform x:Name="ImageTransform" />
+                    </Image.RenderTransform>
+                </Image>
+
+                <Canvas x:Name="CropCanvas"
+                        Margin="0"
+                        Visibility="Collapsed"
+                        Background="Transparent"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        PointerMoved="CropCanvas_PointerMoved"
+                        PointerReleased="CropCanvas_PointerReleased">
+                    <Rectangle x:Name="CropFrameRect"
+                               Stroke="#CCFFFFFF"
+                               StrokeThickness="2"
+                               Fill="Transparent"
+                               RadiusX="2"
+                               RadiusY="2"/>
+
+                    <Rectangle x:Name="CropTopHandle"
+                               Width="14"
+                               Height="14"
+                               Fill="#FFFFFF"
+                               PointerPressed="CropTopHandle_PointerPressed"/>
+                    <Rectangle x:Name="CropRightHandle"
+                               Width="14"
+                               Height="14"
+                               Fill="#FFFFFF"
+                               PointerPressed="CropRightHandle_PointerPressed"/>
+                    <Rectangle x:Name="CropBottomHandle"
+                               Width="14"
+                               Height="14"
+                               Fill="#FFFFFF"
+                               PointerPressed="CropBottomHandle_PointerPressed"/>
+                    <Rectangle x:Name="CropLeftHandle"
+                               Width="14"
+                               Height="14"
+                               Fill="#FFFFFF"
+                               PointerPressed="CropLeftHandle_PointerPressed"/>
+                </Canvas>
+            </Grid>
+
+            <!-- Overlay layer (buttons + zoom indicator) -->
             <!-- Info button and zoom indicator use the same style -->
             <StackPanel Orientation="Vertical" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="20">
                 <Border Background="#CC222222" CornerRadius="8" Padding="0" Margin="0,0,0,12" Width="48" Height="48">
@@ -44,22 +103,68 @@
                 </Border>
             </StackPanel>
 
-            <Image x:Name="MainImage"
-                Source="{x:Bind ViewModel.DisplayImage, Mode=OneWay}"
-                Stretch="Uniform"
-                HorizontalAlignment="Center"
-                VerticalAlignment="Center"
-                RenderTransformOrigin="0.5,0.5"
-                Margin="20"
-                PointerWheelChanged="MainImage_PointerWheelChanged"
-                PointerPressed="MainImage_PointerPressed"
-                PointerMoved="MainImage_PointerMoved"
-                PointerReleased="MainImage_PointerReleased"
-                DoubleTapped="MainImage_DoubleTapped">
-                <Image.RenderTransform>
-                    <CompositeTransform x:Name="ImageTransform" />
-                </Image.RenderTransform>
-            </Image>
+            <!-- Phase 1 toolbar -->
+            <StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Top"
+                        Margin="20"
+                        Spacing="8">
+                <Border Background="#CC222222" CornerRadius="8" Width="48" Height="48">
+                    <Button Background="Transparent"
+                            BorderThickness="0"
+                            Width="48" Height="48"
+                            Command="{x:Bind ViewModel.CropToggleCommand}"
+                            ToolTipService.ToolTip="Kırp / Onayla">
+                        <Grid>
+                            <FontIcon x:Name="CropIcon"
+                                      FontFamily="{StaticResource SymbolThemeFontFamily}"
+                                      Glyph="&#xE7A8;"
+                                      FontSize="22"
+                                      Foreground="White"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"/>
+                            <FontIcon x:Name="CropCheckIcon"
+                                      FontFamily="{StaticResource SymbolThemeFontFamily}"
+                                      Glyph="&#xE73E;"
+                                      FontSize="22"
+                                      Foreground="White"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"
+                                      Visibility="Collapsed"/>
+                        </Grid>
+                    </Button>
+                </Border>
+
+                <Border Background="#CC222222" CornerRadius="8" Width="48" Height="48">
+                    <Button Background="Transparent"
+                            BorderThickness="0"
+                            Width="48" Height="48"
+                            Command="{x:Bind ViewModel.RotateLeftCommand}"
+                            ToolTipService.ToolTip="Sola Döndür (90°)">
+                        <FontIcon FontFamily="{StaticResource SymbolThemeFontFamily}"
+                                  Glyph="&#xE7A7;"
+                                  FontSize="22"
+                                  Foreground="White"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center"/>
+                    </Button>
+                </Border>
+
+                <Border Background="#CC222222" CornerRadius="8" Width="48" Height="48">
+                    <Button Background="Transparent"
+                            BorderThickness="0"
+                            Width="48" Height="48"
+                            Command="{x:Bind ViewModel.RotateRightCommand}"
+                            ToolTipService.ToolTip="Sağa Döndür (90°)">
+                        <FontIcon FontFamily="{StaticResource SymbolThemeFontFamily}"
+                                  Glyph="&#xE7A6;"
+                                  FontSize="22"
+                                  Foreground="White"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center"/>
+                    </Button>
+                </Border>
+            </StackPanel>
         </Grid>
 
         <Border x:Name="InfoPanel"

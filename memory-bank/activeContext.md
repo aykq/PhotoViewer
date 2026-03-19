@@ -18,6 +18,14 @@ Proje temizliği ve stabilizasyon çalışmaları tamamlandı. Memory Bank Phase
   - `Magick.NET-Q8-AnyCPU` güncellendi (NU1902/NU1903)
   - `MVVMTK0045` için `ObservableProperty` alanları `partial property` formuna çevrildi
   - `CS8622` için `App_Activated` nullability imzası düzeltildi
+- **2026-03-19**: Phase 1 başlatıldı
+  - Toolbar eklendi ve komutlar bağlandı
+  - Sola/Sağa 90 derece döndürme eklendi (direkt orijinal dosyayı günceller)
+- **2026-03-19**: Crop UX eklendi
+  - Tek `Crop` butonu: crop modunda `check` ikonuna geçiyor
+  - Görsel üzerinde sürüklenebilir `üst/alt/sol/sağ` kırpma göstergeleri
+  - `check` ile kırpma uygulanıyor ve orijinal dosyanın üstüne yazılıyor
+  - Döndürme işlemleri de orijinal dosyanın üstüne yazıyor
 
 ## Next Steps
 

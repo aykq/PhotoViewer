@@ -25,9 +25,9 @@
 ## Phase 1: Temel Düzenleme
 
 ### Yapılacak Görevler
-- [ ] Toolbar ekleme (döndürme, kırpma, silme, kaydetme butonları)
-- [ ] Sola/sağa döndürme (90° döndürme)
-- [ ] Hızlı kırpma (center crop)
+- [x] Toolbar ekleme (döndürme, kırpma, silme, kaydetme butonları)
+- [x] Sola/sağa döndürme (90° döndürme)
+- [x] Hızlı kırpma (center crop) -> sürükle-bırak crop + tik ile uygula
 - [ ] Değişiklikleri kaydetme (backup ile)
 - [ ] Fotoğraf silme
 - [ ] Dizin bazlı navigasyon (ileri/geri geçiş)
