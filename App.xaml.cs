@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media.Imaging;
 using PhotoViewer.Views;
 using Microsoft.Windows.AppLifecycle;
 using Windows.ApplicationModel.Activation;
@@ -62,8 +63,8 @@ namespace PhotoViewer
                 if (_window is MainWindow mainWindow)
                 {
                     var hwnd = WindowNative.GetWindowHandle(mainWindow);
-                    MainWindow.ShowWindow(hwnd, MainWindow.SW_RESTORE);
-                    MainWindow.SetForegroundWindow(hwnd);
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd);
                     mainWindow.Activate();
                 }
             });

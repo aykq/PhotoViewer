@@ -1,23 +1,24 @@
 using System;
-using System.Linq;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics;
-using Windows.Foundation;
 using Microsoft.UI.Xaml.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PhotoViewer.Services;
-using ImageMagick;
 
 namespace PhotoViewer.ViewModels
 {
     public partial class MainViewModel : ObservableObject
     {
-        private readonly ImageLoaderService _imageLoader;
-        private readonly MetadataService _metadataService;
-        private string? _currentFilePath;
-        private Rect _pendingCropRectNormalized = new Rect(0, 0, 1, 1);
+        private readonly ImageLoaderService _imageLoader = new();
+        private readonly MetadataService _metadataService = new();
+        private CancellationTokenSource? _loadCts;
+        private IReadOnlyList<string> _folderFiles = Array.Empty<string>();
+        private int _currentIndex = -1;
 
         [ObservableProperty]
         public partial WriteableBitmap? DisplayImage { get; set; }
@@ -40,29 +41,54 @@ namespace PhotoViewer.ViewModels
         [ObservableProperty]
         public partial string? GpsAltitude { get; set; }
 
+        /// <summary>Yükleme / codec mesajı (toolbar altında).</summary>
         [ObservableProperty]
-        public partial bool IsCropMode { get; set; }
+        public partial string? StatusMessage { get; set; }
 
-        public MainViewModel()
-        {
-            _imageLoader = new ImageLoaderService();
-            _metadataService = new MetadataService();
-        }
+        /// <summary>Örn. "3 / 42"</summary>
+        [ObservableProperty]
+        public partial string NavigationInfo { get; set; } = string.Empty;
 
         [RelayCommand]
         public async Task LoadPhotoAsync(string filePath)
         {
             if (string.IsNullOrEmpty(filePath)) return;
 
-            _currentFilePath = filePath;
-            IsCropMode = false;
-            _pendingCropRectNormalized = new Rect(0, 0, 1, 1);
+            _loadCts?.Cancel();
+            _loadCts?.Dispose();
+            _loadCts = new CancellationTokenSource();
+            var ct = _loadCts.Token;
+
+            StatusMessage = null;
+            DisplayImage = null;
+
+            var fullPath = Path.GetFullPath(filePath);
+            _folderFiles = PhotoFolderService.GetSortedImagesInSameFolder(fullPath);
+            _currentIndex = PhotoFolderService.IndexOf(_folderFiles, fullPath);
+            if (_currentIndex < 0)
+            {
+                _folderFiles = new[] { fullPath };
+                _currentIndex = 0;
+            }
+
+            NavigationInfo = _folderFiles.Count > 1
+                ? $"{_currentIndex + 1} / {_folderFiles.Count}"
+                : string.Empty;
 
             try
             {
-                DisplayImage = await _imageLoader.LoadImageAsync(_currentFilePath);
+                var bitmap = await _imageLoader.LoadImageAsync(fullPath, ct);
+                ct.ThrowIfCancellationRequested();
 
-                var metadata = _metadataService.GetExifMetadata(_currentFilePath);
+                if (bitmap is null)
+                {
+                    StatusMessage = "Görüntü açılamadı (Windows görüntü codec’i veya dosya formatı desteklenmiyor olabilir).";
+                    return;
+                }
+
+                DisplayImage = bitmap;
+
+                var metadata = await _metadataService.GetExifMetadataAsync(fullPath);
 
                 Camera = metadata.FirstOrDefault(m => m.Label == "Camera")?.Value ?? string.Empty;
                 Resolution = metadata.FirstOrDefault(m => m.Label == "Resolution")?.Value ?? string.Empty;
@@ -70,148 +96,32 @@ namespace PhotoViewer.ViewModels
                 Format = metadata.FirstOrDefault(m => m.Label == "Format")?.Value ?? string.Empty;
                 Coordinates = metadata.FirstOrDefault(m => m.Label == "Coordinates")?.Value ?? string.Empty;
                 GpsAltitude = metadata.FirstOrDefault(m => m.Label == "GPS Altitude")?.Value;
+            }
+            catch (OperationCanceledException)
+            {
+                // hızlı gezinti — önceki yükleme iptal
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"LoadPhotoAsync error: {ex}");
+                StatusMessage = $"Yükleme hatası: {ex.Message}";
             }
-        }
-
-        public void SetCropRectNormalized(Rect rect)
-        {
-            // Clamp to valid [0..1] normalized rectangle.
-            var x = Math.Clamp(rect.X, 0, 1);
-            var y = Math.Clamp(rect.Y, 0, 1);
-            var w = Math.Clamp(rect.Width, 0, 1);
-            var h = Math.Clamp(rect.Height, 0, 1);
-
-            if (x + w > 1) w = 1 - x;
-            if (y + h > 1) h = 1 - y;
-
-            _pendingCropRectNormalized = new Rect(x, y, Math.Max(0, w), Math.Max(0, h));
-        }
-
-        // --- Phase 1 toolbar commands ---
-        [RelayCommand]
-        public async Task RotateLeft()
-        {
-            Debug.WriteLine($"RotateLeft clicked. IsCropMode={IsCropMode}");
-            if (IsCropMode) return;
-            await RotateByAsync(-90);
         }
 
         [RelayCommand]
-        public async Task RotateRight()
+        public async Task NextPhotoAsync()
         {
-            Debug.WriteLine($"RotateRight clicked. IsCropMode={IsCropMode}");
-            if (IsCropMode) return;
-            await RotateByAsync(90);
+            if (_folderFiles.Count < 2 || _currentIndex < 0 || _currentIndex >= _folderFiles.Count - 1)
+                return;
+            await LoadPhotoAsync(_folderFiles[_currentIndex + 1]);
         }
 
         [RelayCommand]
-        public async Task CropToggle()
+        public async Task PreviousPhotoAsync()
         {
-            Debug.WriteLine($"CropToggle clicked. IsCropMode={IsCropMode}, pendingRect={_pendingCropRectNormalized}");
-            if (string.IsNullOrEmpty(_currentFilePath) || !File.Exists(_currentFilePath))
+            if (_folderFiles.Count < 2 || _currentIndex <= 0)
                 return;
-
-            if (!IsCropMode)
-            {
-                Debug.WriteLine("Entering crop mode.");
-                IsCropMode = true;
-                return;
-            }
-
-            Debug.WriteLine($"Applying crop with rect={_pendingCropRectNormalized} on file={_currentFilePath}");
-            await ApplyCropAsync();
-            IsCropMode = false;
-        }
-
-        private async Task RotateByAsync(int degrees)
-        {
-            if (string.IsNullOrEmpty(_currentFilePath) || !File.Exists(_currentFilePath))
-                return;
-
-            try
-            {
-                Debug.WriteLine($"Rotating file by {degrees} degrees: {_currentFilePath}");
-                await Task.Run(() =>
-                {
-                    using var image = new MagickImage(_currentFilePath);
-                    image.AutoOrient();
-                    image.Rotate(degrees);
-                    // Keep cropped/rotated page info consistent for writing back.
-                    image.ResetPage();
-                    image.Write(_currentFilePath);
-                });
-
-                DisplayImage = await _imageLoader.LoadImageAsync(_currentFilePath);
-
-                var metadata = _metadataService.GetExifMetadata(_currentFilePath);
-                Camera = metadata.FirstOrDefault(m => m.Label == "Camera")?.Value ?? string.Empty;
-                Resolution = metadata.FirstOrDefault(m => m.Label == "Resolution")?.Value ?? string.Empty;
-                FileSize = metadata.FirstOrDefault(m => m.Label == "File Size")?.Value ?? string.Empty;
-                Format = metadata.FirstOrDefault(m => m.Label == "Format")?.Value ?? string.Empty;
-                Coordinates = metadata.FirstOrDefault(m => m.Label == "Coordinates")?.Value ?? string.Empty;
-                GpsAltitude = metadata.FirstOrDefault(m => m.Label == "GPS Altitude")?.Value;
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"RotateByAsync error: {ex}");
-            }
-        }
-
-        private async Task ApplyCropAsync()
-        {
-            if (string.IsNullOrEmpty(_currentFilePath) || !File.Exists(_currentFilePath))
-                return;
-
-            var r = _pendingCropRectNormalized;
-            if (r.Width <= 0.001 || r.Height <= 0.001) return;
-
-            try
-            {
-                await Task.Run(() =>
-                {
-                    using var image = new MagickImage(_currentFilePath);
-                    image.AutoOrient();
-
-                    uint imgW = image.Width;
-                    uint imgH = image.Height;
-
-                    int imgWi = (int)imgW;
-                    int imgHi = (int)imgH;
-
-                    int x = (int)Math.Round(r.X * imgWi);
-                    int y = (int)Math.Round(r.Y * imgHi);
-                    int w = (int)Math.Round(r.Width * imgWi);
-                    int h = (int)Math.Round(r.Height * imgHi);
-
-                    x = Math.Clamp(x, 0, Math.Max(0, imgWi - 1));
-                    y = Math.Clamp(y, 0, Math.Max(0, imgHi - 1));
-                    w = Math.Clamp(w, 1, imgWi - x);
-                    h = Math.Clamp(h, 1, imgHi - y);
-
-                    image.Crop(new MagickGeometry(x, y, (uint)w, (uint)h));
-                    image.ResetPage();
-                    image.Write(_currentFilePath);
-                });
-
-                Debug.WriteLine($"Crop applied. New file loaded from {_currentFilePath}");
-                DisplayImage = await _imageLoader.LoadImageAsync(_currentFilePath);
-
-                var metadata = _metadataService.GetExifMetadata(_currentFilePath);
-                Camera = metadata.FirstOrDefault(m => m.Label == "Camera")?.Value ?? string.Empty;
-                Resolution = metadata.FirstOrDefault(m => m.Label == "Resolution")?.Value ?? string.Empty;
-                FileSize = metadata.FirstOrDefault(m => m.Label == "File Size")?.Value ?? string.Empty;
-                Format = metadata.FirstOrDefault(m => m.Label == "Format")?.Value ?? string.Empty;
-                Coordinates = metadata.FirstOrDefault(m => m.Label == "Coordinates")?.Value ?? string.Empty;
-                GpsAltitude = metadata.FirstOrDefault(m => m.Label == "GPS Altitude")?.Value;
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"ApplyCropAsync error: {ex}");
-            }
+            await LoadPhotoAsync(_folderFiles[_currentIndex - 1]);
         }
     }
 }

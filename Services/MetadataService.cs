@@ -1,16 +1,20 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices.WindowsRuntime;
+using System.Threading.Tasks;
 using MetadataExtractor;
 using MetadataExtractor.Formats.Exif;
 using PhotoViewer.Models;
-using ImageMagick;
+using Windows.Graphics.Imaging;
+using Windows.Storage;
 
 namespace PhotoViewer.Services
 {
     public class MetadataService
     {
-        public List<ExifData> GetExifMetadata(string filePath)
+        public async Task<List<ExifData>> GetExifMetadataAsync(string filePath)
         {
             var metadataList = new List<ExifData>();
             var fileInfo = new FileInfo(filePath);
@@ -27,17 +31,19 @@ namespace PhotoViewer.Services
                 if (!string.IsNullOrWhiteSpace(camera))
                     metadataList.Add(new ExifData { Label = "Camera", Value = camera });
 
-                // Çözünürlük - Magick.NET ile daha güvenilir
+                // Çözünürlük — WIC başlığı (hızlı)
                 try
                 {
-                    using (var img = new MagickImage(filePath))
-                    {
-                        metadataList.Add(new ExifData { Label = "Resolution", Value = $"{img.Width} x {img.Height}" });
-                    }
+                    var file = await StorageFile.GetFileFromPathAsync(filePath);
+                    using var stream = await file.OpenAsync(FileAccessMode.Read);
+                    var decoder = await BitmapDecoder.CreateAsync(stream);
+                    uint w = decoder.OrientedPixelWidth;
+                    uint h = decoder.OrientedPixelHeight;
+                    metadataList.Add(new ExifData { Label = "Resolution", Value = $"{w} x {h}" });
                 }
                 catch
                 {
-                    // fallback: try directories
+                    // codec yoksa boş bırak
                 }
 
                 // Dosya boyutu
@@ -65,7 +71,7 @@ namespace PhotoViewer.Services
             return metadataList;
         }
 
-        private string FormatFileSize(long bytes)
+        private static string FormatFileSize(long bytes)
         {
             if (bytes < 1024) return $"{bytes} B";
             double kb = bytes / 1024.0;

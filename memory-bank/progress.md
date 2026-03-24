@@ -17,25 +17,28 @@
 ### Kullanılan Kütüphaneler
 - Microsoft.WindowsAppSDK 1.8.260209005
 - CommunityToolkit.Mvvm 8.4.0
-- Magick.NET-Q8-AnyCPU 14.11.0
 - MetadataExtractor 2.9.0
+- Görüntü decode: **Windows.Graphics.Imaging (WIC)** — Magick.NET yok
 
 ---
 
-## Phase 1: Temel Düzenleme
+## Phase 1: Hızlı görüntüleme (güncel)
+
+### Tamamlanan Görevler
+- [x] **Düzenleme kaldırıldı** (döndürme, kırpma, diske yazma, `.bak` yok)
+- [x] **WIC** ile decode (sistem codec’leri; daha hızlı açılış)
+- [x] Büyük görsellerde uzun kenar **4096** ile UI ölçekleme
+- [x] **Dizin gezintisi**: aynı klasördeki görüntüler, önceki/sonraki butonlar, **← / →** tuşları
+- [x] Yükleme iptali (hızlı ardışık geçişte önceki decode iptal)
 
 ### Yapılacak Görevler
-- [x] Toolbar ekleme (döndürme, kırpma, silme, kaydetme butonları)
-- [x] Sola/sağa döndürme (90° döndürme)
-- [x] Hızlı kırpma (center crop) -> sürükle-bırak crop + tik ile uygula
-- [ ] Değişiklikleri kaydetme (backup ile)
 - [ ] Fotoğraf silme
-- [ ] Dizin bazlı navigasyon (ileri/geri geçiş)
+- [ ] İsteğe bağlı: önbellek / ön yükleme (bir sonraki görsel için)
+- [ ] İsteğe bağlı: FileOpenPicker, sürükle-bırak
 
 ### Notlar
-- Döndürme ve kırpma Magick.NET ile yapılacak
-- Kaydetmeden önce .bak backup dosyası oluşturulacak
-- Navigasyon için dizindeki tüm fotoğraf dosyaları listelenecek
+- Gezinti: `PhotoFolderService` uzantı listesi (jpg, png, webp, heic, jxl, …)
+- `StatusMessage`: codec yoksa veya dosya açılamazsa kullanıcıya bilgi
 
 ---
 
@@ -44,14 +47,12 @@
 ### Yapılacak Görevler
 - [ ] Dosya seçici dialog (FileOpenPicker)
 - [ ] Sürükle-bırak desteği
-- [ ] Tam kırpma aracı (kullanıcı seçimli alan)
-- [ ] Filtreler/efektler (parlaklık, kontrast, keskinlik, doygunluk)
-- [ ] Kırpma oranı seçenekleri (16:9, 4:3, 1:1, vb.)
-- [ ] Undo/Redo sistemi
+- [ ] (İstenirse) Düzenleme araçları — ayrı kütüphane / harici uygulama ile değerlendirme
+- [ ] Filtreler/efektler
+- [ ] Undo/Redo (düzenleme varsa)
 
 ### Notlar
-- Filtreler için Magick.NET kullanılabilir
-- Undo/Redo için değişiklikleri bir stack'te tutma
+- Düzenleme tekrar eklenirse: Magick, SkiaSharp veya GPU tabanlı seçenekler ayrıca değerlendirilir
 
 ---
 
@@ -60,15 +61,15 @@
 ### Yapılacak Görevler
 - [ ] Slayt gösterisi modu
 - [ ] Favoriler/album sistemi
-- [ ] Batch işlemler (toplu döndürme, silme, format dönüştürme)
+- [ ] Batch işlemler
 - [ ] Karanlık/açık tema desteği
 - [ ] Ayarlar sayfası
 - [ ] Dil desteği (localization/internationalization)
-- [ ] Klavye kısayolları
+- [ ] Ek klavye kısayolları (zoom, panel, vb.)
 
 ### Notlar
-- Tema desteği için WinUI 3 ResourceDictionary kullanılabilir
-- Localization için .resw dosyaları kullanılacak
+- Tema: WinUI 3 ResourceDictionary
+- Localization: .resw
 
 ---
 
@@ -76,11 +77,13 @@
 
 1. Info panel animasyonu manuel implementasyon gerektiriyor (GridLength animasyonu WinUI3'te sorunlu)
 2. MetadataExtractor bazı formatlarda (HEIC, RAW) tam veri okuyamayabilir
+3. **HEIC**: Windows’ta HEIF uzantısı gerekir; codec yoksa `BitmapDecoder` başarısız olabilir
+4. **JXL / bazı formatlar**: Sistemde WIC codec yoksa görüntü açılmaz (Magick fallback yok)
 
 ## Proje Kararları
 
-1. **WinUI 3**: Modern Windows UI için doğru seçim
-2. **Magick.NET**: Görüntü işleme için güçlü ve platform bağımsız
-3. **Single-instance**: AppLifecycle API ile tek kopya çalışma
-4. **Backup system**: .bak dosyaları ile değişiklik güvenliği
-5. **CommunityToolkit.Mvvm**: [ObservableProperty] ve [RelayCommand] ile kod tekrarını azaltma
+1. **WinUI 3**: Modern Windows UI
+2. **WIC (BitmapDecoder)**: Varsayılan görüntü yolu — hız ve sistem entegrasyonu
+3. **Magick.NET kaldırıldı**: Düzenleme yok; ağır native kütüphane bağımlılığı yok
+4. **Single-instance**: AppLifecycle API
+5. **CommunityToolkit.Mvvm**: [ObservableProperty] ve [RelayCommand]
