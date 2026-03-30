@@ -1,12 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
+using System.Runtime.InteropServices;
 
 namespace PhotoViewer.Services
 {
     /// <summary>
-    /// Aynı klasördeki görüntü dosyalarını listeler (sıralı, hızlı gezinti için).
+    /// Aynı klasördeki görüntü dosyalarını listeler.
+    /// Sıra: Windows Gezgini "Ad" sütunu ile uyumlu mantıksal sıralama (StrCmpLogicalW).
     /// </summary>
     public static class PhotoFolderService
     {
@@ -16,15 +17,26 @@ namespace PhotoViewer.Services
             ".tif", ".tiff", ".heic", ".heif", ".jxl", ".avif", ".ico"
         };
 
+        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)]
+        private static extern int StrCmpLogicalW(string? psz1, string? psz2);
+
+        /// <summary>Gezgin ile aynı dosya adı sıralaması (IMG2 &lt; IMG10).</summary>
+        public static int CompareExplorerFileName(string pathA, string pathB)
+        {
+            var nameA = Path.GetFileName(pathA) ?? "";
+            var nameB = Path.GetFileName(pathB) ?? "";
+            int cmp = StrCmpLogicalW(nameA, nameB);
+            if (cmp != 0)
+                return cmp;
+            return StringComparer.OrdinalIgnoreCase.Compare(pathA, pathB);
+        }
+
         public static bool IsSupportedImageExtension(string path)
         {
             var ext = Path.GetExtension(path);
             return !string.IsNullOrEmpty(ext) && ImageExtensions.Contains(ext);
         }
 
-        /// <summary>
-        /// Verilen dosyanın bulunduğu klasördeki tüm görüntüleri alfabetik sıralar.
-        /// </summary>
         public static IReadOnlyList<string> GetSortedImagesInSameFolder(string filePath)
         {
             var full = Path.GetFullPath(filePath);
@@ -39,7 +51,7 @@ namespace PhotoViewer.Services
                     list.Add(Path.GetFullPath(f));
             }
 
-            list.Sort(StringComparer.OrdinalIgnoreCase);
+            list.Sort(CompareExplorerFileName);
 
             if (list.Count == 0)
                 return new[] { full };

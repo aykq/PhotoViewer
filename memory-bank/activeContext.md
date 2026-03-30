@@ -1,35 +1,36 @@
 # Active Context
 
-## Current Work Focus
+## Mevcut Durum
 
-**Saf görüntüleyici**: WIC + **Magick fallback**; döngüsel klasör gezintisi; **kenar gezinti** çubukları; başlık + panelde dosya adı.
+Proje, WinUI 3 / .NET tabanlı yapıdan **C++23 + Win32 + Direct2D + WIC** tabanlı native yapıya taşınmak üzere kararlaştırıldı.
+Eski kod henüz silinmedi — yeni proje kurulumundan önce referans olarak tutulabilir.
 
-## Recent Changes
+## Güncel Odak
 
-- **2026-03-19**: Düzenleme tamamen kaldırıldı; Magick.NET kaldırıldı
-  - `ImageLoaderService`: `Windows.Graphics.Imaging.BitmapDecoder`, EXIF yönü, max kenar 4096
-  - `PhotoFolderService`: klasördeki görüntü uzantıları, sıralı liste, indeks
-  - `MainViewModel`: `NextPhotoAsync` / `PreviousPhotoAsync`, yükleme iptali (`CancellationTokenSource`)
-  - `MainWindow`: crop/toolbar kaldırıldı; önceki/sonraki; `RootGrid` klavye
-  - `PhotoFileHelper.cs` silindi
-  - `MetadataService`: `GetExifMetadataAsync`, çözünürlük için WIC
-- **Memory bank**: `techContext.md`, `projectbrief.md`, `progress.md`, `systemPatterns.md` güncellendi
+**Bir sonraki adım: Phase 0 — C++ proje altyapısının kurulması**
 
-## Next Steps
+1. Visual Studio 2022'de yeni C++ Win32 projesi oluşturma
+2. Direct2D + WIC bağımlılıklarını ekleme
+3. Temel pencere + mesaj döngüsü
+4. vcpkg kurulumu (libheif, libjxl)
 
-1. İsteğe bağlı: fotoğraf silme
-2. İsteğe bağlı: FileOpenPicker, sürükle-bırak, ön yükleme
-3. Performans: büyük klasörlerde liste önbelleği veya lazy enumeration değerlendirmesi
+## Alınan Kararlar
 
-## Active Decisions and Considerations
+- **Dil**: C++23
+- **Rendering**: Direct2D (GPU, zero-copy)
+- **Pencere**: Win32 API (WinUI 3 değil)
+- **Decoder**: WIC birincil + libheif + libjxl fallback
+- **Mimari**: Service-benzeri sınıflar (MVVM yok)
+- **Paket yönetimi**: vcpkg
+- **Referans**: [QuickView](https://github.com/justnullname/QuickView) (C++23 + Direct2D + özel decoderlar)
 
-- Single-instance davranışı App.xaml.cs ile yönetiliyor
-- Görüntü gösterimi **yalnızca WIC** (sistem codec); JXL/özel formatlar codec yoksa açılmayabilir
-- MetadataService: `MetadataExtractor` + `BitmapDecoder` (çözünürlük)
+## Taşınan Özellikler
 
-## Learnings and Project Insights
+Eski WinUI 3 sürümündeki tüm temel özellikler yeni yapıya taşınacak:
+zoom/pan, klasör navigasyonu, EXIF paneli, multi-instance, dosya aktivasyonu.
+Detay için `progress.md` → "Taşınan Özellikler" tablosuna bakınız.
 
-- WinUI 3'te GridLength animasyonu XAML Storyboard ile çalışmıyor, manuel implementasyon gerekiyor
-- CommunityToolkit.Mvvm [ObservableProperty] attribute'u kod üretimi yapıyor
-- WriteableBitmap WIC BGRA pixel verisi ile dolduruluyor
-- Ardışık gezintide önceki decode işlemini iptal etmek yanıt süresini iyileştirir
+## Notlar
+
+- Kullanıcının C++ veya Rust deneyimi yok — ilk C++ projesi olacak
+- Rust ile C++ arasında kalındı; startup hızı ve Windows ekosistemi olgunluğu nedeniyle C++ seçildi

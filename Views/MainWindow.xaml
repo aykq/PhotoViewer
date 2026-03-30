@@ -7,23 +7,23 @@
     mc:Ignorable="d"
     Title="{x:Bind ViewModel.WindowTitle, Mode=OneWay}">
 
-    <Grid x:Name="RootGrid"
-          KeyDown="RootGrid_KeyDown"
-          IsTabStop="True"
-          Loaded="RootGrid_Loaded">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*" />
-            <ColumnDefinition x:Name="InfoPanelColumn" Width="0" />
-        </Grid.ColumnDefinitions>
+        <Grid x:Name="RootGrid"
+              KeyDown="RootGrid_KeyDown"
+              IsTabStop="True"
+              Loaded="RootGrid_Loaded">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition x:Name="InfoPanelColumn" Width="0" />
+            </Grid.ColumnDefinitions>
 
-        <Grid Grid.Column="0" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
             <!-- Image layer -->
             <Image x:Name="MainImage"
                    Source="{x:Bind ViewModel.DisplayImage, Mode=OneWay}"
                    Stretch="Uniform"
                    HorizontalAlignment="Center"
                    VerticalAlignment="Center"
-                   RenderTransformOrigin="0.5,0.5"
+                   RenderTransformOrigin="0,0"
+                   SizeChanged="MainImage_SizeChanged"
                    Margin="20"
                    PointerWheelChanged="MainImage_PointerWheelChanged"
                    PointerPressed="MainImage_PointerPressed"
@@ -41,33 +41,32 @@
                     Width="88"
                     Margin="0"
                     Padding="0"
-                    Background="#22000000"
-                    BorderThickness="0"
-                    Opacity="1"
                     Command="{x:Bind ViewModel.PreviousPhotoCommand}"
                     ToolTipService.ToolTip="Önceki (←)">
-                <FontIcon FontFamily="{StaticResource SymbolThemeFontFamily}"
-                          Glyph="&#xE72B;"
-                          FontSize="28"
-                          Foreground="#CCFFFFFF"
-                          HorizontalAlignment="Center"
-                          VerticalAlignment="Center"/>
+                <Border Effect="BackdropFilterEffect" EffectProperties="blur(20) opacity(0.5)" Background="Transparent">
+                    <FontIcon FontFamily="{StaticResource SymbolThemeFontFamily}"
+                              Glyph="&#xE72B;"
+                              FontSize="28"
+                              Foreground="White"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center"/>
+                </Border>
             </Button>
             <Button HorizontalAlignment="Right"
                     VerticalAlignment="Stretch"
                     Width="88"
                     Margin="0"
                     Padding="0"
-                    Background="#22000000"
-                    BorderThickness="0"
                     Command="{x:Bind ViewModel.NextPhotoCommand}"
                     ToolTipService.ToolTip="Sonraki (→)">
-                <FontIcon FontFamily="{StaticResource SymbolThemeFontFamily}"
-                          Glyph="&#xE72A;"
-                          FontSize="28"
-                          Foreground="#CCFFFFFF"
-                          HorizontalAlignment="Center"
-                          VerticalAlignment="Center"/>
+                <Border Effect="BackdropFilterEffect" EffectProperties="blur(20) opacity(0.5)" Background="Transparent">
+                    <FontIcon FontFamily="{StaticResource SymbolThemeFontFamily}"
+                              Glyph="&#xE72A;"
+                              FontSize="28"
+                              Foreground="White"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center"/>
+                </Border>
             </Button>
 
             <!-- Alt orta: sıra + durum -->
@@ -120,90 +119,7 @@
                     </StackPanel>
                 </Border>
             </StackPanel>
+
+            <!-- InfoPanel is now removed to ensure only buttons are visible -->
         </Grid>
-
-        <Border x:Name="InfoPanel"
-                Grid.Column="1" 
-                Visibility="Collapsed"
-                Background="{ThemeResource SystemControlAcrylicElementBrush}" 
-                BorderBrush="{ThemeResource SystemControlForegroundBaseMediumLowBrush}" 
-                BorderThickness="1,0,0,0">
-            <Grid Padding="20" Width="350">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-
-                <TextBlock Text="EXIF Detayları"
-                           FontSize="20"
-                           FontWeight="Bold"
-                           Margin="0,0,0,12"/>
-
-                <StackPanel Grid.Row="1" Spacing="12">
-                    <!-- Dosya adı -->
-                    <Border Background="#CC222222" CornerRadius="6" Padding="8" Margin="0,0,0,8">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
-                            <FontIcon Glyph="&#xE8B7;" FontSize="16" Foreground="White" />
-                            <TextBlock Text="Dosya adı" FontSize="12" Foreground="#FFD7D7D7" />
-                            <TextBlock Text="{x:Bind ViewModel.FileDisplayName, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" Foreground="White" TextWrapping="Wrap" />
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Kamera marka-model bilgisi -->
-                    <Border Background="#CC222222" CornerRadius="6" Padding="8" Margin="0,0,0,8">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
-                            <FontIcon Glyph="&#xE722;" FontSize="16" Foreground="White" />
-                            <TextBlock Text="Kamera" FontSize="12" Foreground="#FFD7D7D7" />
-                            <TextBlock Text="{x:Bind ViewModel.Camera, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" Foreground="White" />
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Çözünürlük -->
-                    <Border Background="#CC222222" CornerRadius="6" Padding="8" Margin="0,0,0,8">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
-                            <FontIcon Glyph="&#xE8B6;" FontSize="16" Foreground="White" />
-                            <TextBlock Text="Çözünürlük" FontSize="12" Foreground="#FFD7D7D7" />
-                            <TextBlock Text="{x:Bind ViewModel.Resolution, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" Foreground="White" />
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Dosya boyutu -->
-                    <Border Background="#CC222222" CornerRadius="6" Padding="8" Margin="0,0,0,8">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
-                            <FontIcon Glyph="&#xE7C3;" FontSize="16" Foreground="White" />
-                            <TextBlock Text="Dosya Boyutu" FontSize="12" Foreground="#FFD7D7D7" />
-                            <TextBlock Text="{x:Bind ViewModel.FileSize, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" Foreground="White" />
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Koordinatlar -->
-                    <Border Background="#CC222222" CornerRadius="6" Padding="8" Margin="0,0,0,8">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
-                            <FontIcon Glyph="&#xE707;" FontSize="16" Foreground="White" />
-                            <TextBlock Text="Koordinatlar" FontSize="12" Foreground="#FFD7D7D7" />
-                            <TextBlock Text="{x:Bind ViewModel.Coordinates, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" Foreground="White" />
-                        </StackPanel>
-                    </Border>
-
-                    <!-- GPS Altitude -->
-                    <Border Background="#CC222222" CornerRadius="6" Padding="8" Margin="0,0,0,8">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
-                            <FontIcon Glyph="&#xE81E;" FontSize="16" Foreground="White" />
-                            <TextBlock Text="GPS Altitude" FontSize="12" Foreground="#FFD7D7D7" />
-                            <TextBlock Text="{x:Bind ViewModel.GpsAltitude, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" Foreground="White" />
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Fotoğraf formatı indicator -->
-                    <Border Background="#CC222222" CornerRadius="6" Padding="8" Margin="0,0,0,8">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
-                            <FontIcon Glyph="&#xE8FD;" FontSize="16" Foreground="White" />
-                            <TextBlock Text="Format" FontSize="12" Foreground="#FFD7D7D7" />
-                            <TextBlock Text="{x:Bind ViewModel.Format, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" Foreground="White" />
-                        </StackPanel>
-                    </Border>
-                </StackPanel>
-            </Grid>
-        </Border>
-    </Grid>
 </Window>

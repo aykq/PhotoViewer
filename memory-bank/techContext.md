@@ -1,58 +1,85 @@
 # Tech Context
 
-## Technologies Used
+## Karar: C++ ile Sıfırdan Yeniden Yazım
 
-| Teknoloji | Versiyon | Kullanım Alanı |
-|-----------|----------|----------------|
-| .NET | 8.0 | Runtime |
-| Windows App SDK | 1.8.260209005 | WinUI 3 UI Framework |
-| CommunityToolkit.Mvvm | 8.4.0 | MVVM pattern implementasyonu |
-| **Windows.Graphics.Imaging (WIC)** | OS codec | Birincil decode (hızlı) |
-| **Magick.NET-Q8-AnyCPU** | 14.11.0 | **Fallback** decode (WIC başarısız olunca; JXL, bazı RAW vb.) |
-| MetadataExtractor | 2.9.0 | EXIF metadata okuma |
-| WinUI 3 | - | Kullanıcı arayüzü |
+Proje, WinUI 3 / .NET tabanlı yapıdan **C++23 + Direct2D + WIC** tabanlı native bir yapıya taşınmaktadır.
+Sebep: CLR/WinUI 3 startup gecikmesi (~300–500ms), GC pauzları ve rendering pipeline'ın CPU-side olması.
+Referans proje: [QuickView](https://github.com/justnullname/QuickView) (C++23 + Direct2D + WIC + özel decoderlar)
 
-**Akış:** Önce WIC → başarısızsa ImageMagick (piksel decode arka planda; `WriteableBitmap` UI iş parçacığında).
+---
+
+## Yeni Tech Stack
+
+| Bileşen | Teknoloji | Notlar |
+|---------|-----------|--------|
+| **Dil** | C++23 | Modern, native |
+| **Pencere / Mesaj döngüsü** | Win32 API | `CreateWindowEx`, `WM_` mesajları |
+| **Rendering** | Direct2D | GPU-accelerated, zero-copy |
+| **Metin / UI** | DirectWrite | Font render |
+| **Görüntü decode (birincil)** | WIC (Windows Imaging Component) | OS-native, JPEG/PNG/BMP/GIF/WebP/TIFF/ICO |
+| **HEIC / HEIF** | libheif | WIC codec yoksa devreye girer |
+| **JXL** | libjxl | WIC codec yoksa devreye girer |
+| **AVIF** | libavif / dav1d | Opsiyonel |
+| **EXIF metadata** | WIC MetadataQueryReader | veya libexif |
+| **IDE** | Visual Studio 2022 | C++ Desktop Development workload |
+| **Build** | MSBuild / CMake | TBD |
+
+---
+
+## Startup Performansı
+
+| Stack | Startup süresi |
+|-------|----------------|
+| WinUI 3 / .NET 8 (eski) | ~300–500ms |
+| C++ Win32 + Direct2D (yeni) | **<10ms** |
+
+---
+
+## Rendering Mimarisi
+
+```
+Win32 HWND
+  └── Direct2D HwndRenderTarget  (veya DXGI SwapChain)
+        └── ID2D1Bitmap  (WIC'ten yüklenen görüntü)
+              └── DrawBitmap() — GPU transform (zoom/pan)
+```
+
+- Zoom ve pan: `D2D1::Matrix3x2F` scale + translate — CPU'ya dokunmaz
+- Animasyonlar: `WM_TIMER` veya DWM flush ile frame bazlı
+
+---
+
+## Format Desteği Stratejisi
+
+```
+Dosya açılır
+  ├── WIC BitmapDecoder dene (JPEG, PNG, BMP, GIF, TIFF, WebP, ICO, HEIC*, JXL*)
+  │     * sistem codec yüklüyse
+  └── Başarısızsa → format uzantısına göre özel decoder
+        ├── .heic / .heif  → libheif
+        ├── .jxl           → libjxl
+        └── .avif          → libavif
+```
+
+---
 
 ## Development Setup
 
 ### Gereksinimler
-- Visual Studio 2022 veya .NET 8 SDK
-- Windows 10/11
-- Windows App SDK workload
-
-### Derleme
-```bash
-dotnet build
-dotnet run
-```
+- Visual Studio 2022 (C++ Desktop Development workload)
+- Windows 10/11 SDK (10.0.19041+)
+- vcpkg (libheif, libjxl, libavif paket yönetimi için)
 
 ### Platform Hedefleri
-- x86, x64, ARM64
+- x64 (birincil), x86, ARM64
 
-### Target Framework
-- net8.0-windows10.0.19041.0
-- Minimum: Windows 10 1809 (build 17763)
+### Minimum Windows
+- Windows 10 1809 (build 17763) — Direct2D 1.1 + WIC garantili
 
-## Technical Constraints
+---
 
-- WinUI 3'te GridLength animasyonu XAML Storyboard ile çalışmıyor, manuel easing kullanılıyor
-- Fallback Magick decode CPU ağırdır; yalnızca WIC yetmediğinde devreye girer
-- MetadataExtractor + çözünürlük için `BitmapDecoder` (WIC); codec yoksa çözünürlük satırı boş kalabilir
-- Single-instance için AppLifecycle API kullanılıyor
+## Eski Stack (Kaldırıldı)
 
-## Dependencies
-
-```
-CommunityToolkit.Mvvm
-Magick.NET-Q8-AnyCPU
-MetadataExtractor
-Microsoft.WindowsAppSDK
-```
-
-## Tool Usage Patterns
-
-- **Git**: Versiyon kontrolü
-- **Visual Studio**: IDE
-- **dotnet CLI**: Build ve test
-- **NuGet**: Paket yönetimi
+- .NET 8, WinUI 3, CommunityToolkit.Mvvm
+- Magick.NET, MetadataExtractor
+- WriteableBitmap, XAML rendering
