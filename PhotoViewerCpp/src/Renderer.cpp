@@ -127,7 +127,7 @@ bool Renderer::LoadImage(const std::wstring& path)
     return false;
 }
 
-void Renderer::Render()
+void Renderer::Render(const ViewState& vs)
 {
     if (FAILED(CreateDeviceResources())) return;
 
@@ -146,19 +146,20 @@ void Renderer::Render()
         D2D1_SIZE_F windowSize = m_renderTarget->GetSize();
         D2D1_SIZE_F imageSize  = m_bitmap->GetSize();
 
-        // Aspect ratio korumalı "fit" hesabı:
-        // Her iki eksen için ölçek faktörünü bul, küçük olanı seç
-        // (büyük olanı seçsek görüntü pencereden taşardı)
-        float scaleX = windowSize.width  / imageSize.width;
-        float scaleY = windowSize.height / imageSize.height;
-        float scale  = min(scaleX, scaleY);
+        // Aspect ratio korumalı "fit" ölçeği (zoomFactor=1 → tam ekrana sığdır)
+        float scaleX  = windowSize.width  / imageSize.width;
+        float scaleY  = windowSize.height / imageSize.height;
+        float fitScale = min(scaleX, scaleY);
 
-        float destW = imageSize.width  * scale;
-        float destH = imageSize.height * scale;
+        // Nihai ölçek = fit ölçeği × kullanıcı zoom faktörü
+        float finalScale = fitScale * vs.zoomFactor;
 
-        // Görüntüyü pencere ortasına hizala
-        float destX = (windowSize.width  - destW) * 0.5f;
-        float destY = (windowSize.height - destH) * 0.5f;
+        float destW = imageSize.width  * finalScale;
+        float destH = imageSize.height * finalScale;
+
+        // Fit konumu (pencere ortası) + pan ofseti
+        float destX = (windowSize.width  - destW) * 0.5f + vs.panX;
+        float destY = (windowSize.height - destH) * 0.5f + vs.panY;
 
         m_renderTarget->DrawBitmap(
             m_bitmap,
@@ -166,7 +167,6 @@ void Renderer::Render()
         );
     }
 
-    // Phase 2: zoom/pan transform buraya eklenecek (Matrix3x2F)
     // Phase 5: EXIF paneli (DirectWrite metin)
 
     HRESULT hr = m_renderTarget->EndDraw();

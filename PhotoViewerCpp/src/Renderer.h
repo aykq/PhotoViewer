@@ -11,6 +11,15 @@
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "windowscodecs.lib")
 
+// Görüntünün ekrandaki dönüşüm durumu.
+// WndProc fare/klavye olaylarında günceller; Renderer sadece okur.
+struct ViewState
+{
+    float zoomFactor = 1.0f;  // 1.0 = fit-to-window, >1 = yakın, <1 = uzak
+    float panX       = 0.0f;  // Piksel cinsinden yatay kaydırma
+    float panY       = 0.0f;  // Piksel cinsinden dikey kaydırma
+};
+
 // Renderer: Direct2D render target yönetimi + WIC görüntü yükleme
 // Görev: pencereye GPU üzerinden çizim yapmak
 class Renderer
@@ -24,7 +33,7 @@ public:
     Renderer& operator=(const Renderer&) = delete;
 
     // Ana çizim fonksiyonu — WM_PAINT'te çağrılır
-    void Render();
+    void Render(const ViewState& vs);
 
     // Pencere boyutlandığında render target'ı güncelle — WM_SIZE'da çağrılır
     void Resize(UINT width, UINT height);
