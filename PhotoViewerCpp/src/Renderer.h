@@ -12,6 +12,30 @@
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "windowscodecs.lib")
 
+// Navigation arrow pill boyutları — hem Renderer hem main.cpp tarafından kullanılır
+namespace ArrowLayout {
+    constexpr float ZoneW  = 48.0f;  // tıklanabilir bölge genişliği
+    constexpr float PillH  = 80.0f;  // pill yüksekliği
+    constexpr float Radius = 8.0f;   // köşe yarıçapı
+}
+
+// Görüntüye ait metadata (decode thread'de doldurulur, UI thread'de okunur)
+struct ImageInfo
+{
+    std::wstring filename;
+    int          width         = 0;
+    int          height        = 0;
+    int64_t      fileSizeBytes = 0;
+    std::wstring format;         // e.g. L"JPEG"
+    // EXIF alanları — mevcut değilse boş wstring
+    std::wstring dateTaken;
+    std::wstring cameraMake;
+    std::wstring cameraModel;
+    std::wstring aperture;       // e.g. L"f/2.8"
+    std::wstring shutterSpeed;   // e.g. L"1/500s"
+    std::wstring iso;
+};
+
 // Görüntünün ekrandaki dönüşüm durumu.
 // WndProc fare/klavye olaylarında günceller; Renderer sadece okur.
 struct ViewState
@@ -20,6 +44,9 @@ struct ViewState
     float panX              = 0.0f;   // Piksel cinsinden yatay kaydırma
     float panY              = 0.0f;   // Piksel cinsinden dikey kaydırma
     bool  showZoomIndicator = false;  // Zoom overlay gösterilsin mi?
+    bool  showInfoPanel     = false;  // I tuşuyla toggle — navigasyonda sıfırlanmaz
+    int   imageIndex        = 0;      // 1-based; 0 = klasör yok
+    int   imageTotal        = 0;      // 0 = klasör yok
 };
 
 // Renderer: Direct2D render target yönetimi + WIC görüntü yükleme
@@ -35,7 +62,7 @@ public:
     Renderer& operator=(const Renderer&) = delete;
 
     // Ana çizim fonksiyonu — WM_PAINT'te çağrılır
-    void Render(const ViewState& vs);
+    void Render(const ViewState& vs, const ImageInfo* info);
 
     // Pencere boyutlandığında render target'ı güncelle — WM_SIZE'da çağrılır
     void Resize(UINT width, UINT height);
@@ -52,16 +79,24 @@ private:
     // GPU cihazı kurtarma: senkron WIC yükleme — sadece D2DERR_RECREATE_TARGET sonrası çağrılır
     bool    LoadImage(const std::wstring& path);
 
+    // Overlay çizim yardımcıları
+    void DrawNavArrows(const ViewState& vs);
+    void DrawIndexBar(const ViewState& vs);
+    void DrawInfoPanel(const ViewState& vs, const ImageInfo* info);
+
     HWND                   m_hwnd         = nullptr;
     ID2D1Factory*          m_factory      = nullptr;   // Direct2D fabrikası (cihazdan bağımsız)
     ID2D1HwndRenderTarget* m_renderTarget = nullptr;   // HWND'e bağlı render target (GPU)
 
-    // Zoom indicator — DirectWrite (cihazdan bağımsız)
+    // DirectWrite — cihazdan bağımsız
     IDWriteFactory*        m_dwriteFactory = nullptr;
-    IDWriteTextFormat*     m_textFormat    = nullptr;
+    IDWriteTextFormat*     m_textFormat    = nullptr;  // 16 DIP Semi-Bold, center — zoom indicator + ok glipleri
+    IDWriteTextFormat*     m_labelFormat   = nullptr;  // 13 DIP Regular, left — panel etiketler
+    IDWriteTextFormat*     m_valueFormat   = nullptr;  // 13 DIP Semi-Bold, left — panel değerler
+    IDWriteTextFormat*     m_indexFormat   = nullptr;  // 14 DIP Semi-Bold, center — index bar
 
-    // Zoom indicator — fırçalar (cihaza bağlı, render target ile birlikte oluşturulur/yok edilir)
-    ID2D1SolidColorBrush*  m_whiteBrush   = nullptr;   // "%150" metni için
+    // Fırçalar (cihaza bağlı, render target ile birlikte oluşturulur/yok edilir)
+    ID2D1SolidColorBrush*  m_whiteBrush   = nullptr;   // Metin için
     ID2D1SolidColorBrush*  m_overlayBrush = nullptr;   // Yarı saydam siyah arka plan
 
     IWICImagingFactory*    m_wicFactory   = nullptr;   // WIC fabrikası (GPU kurtarma için)
