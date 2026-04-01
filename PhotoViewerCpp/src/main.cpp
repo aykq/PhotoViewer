@@ -9,114 +9,12 @@
 #include <cstdint>
 #include "Renderer.h"
 #include "FolderNavigator.h"
+#include "ImageDecoder.h"
 
 // --- Sabitler ---
 
 static constexpr UINT     WM_DECODE_DONE        = WM_APP + 1;
 static constexpr UINT_PTR kZoomIndicatorTimerID = 1;
-
-// --- WIC Metadata Yardımcıları ---
-
-// PROPVARIANT içindeki string değerini wstring olarak döner; başarısız olunca boş döner.
-static std::wstring WicQueryString(IWICMetadataQueryReader* reader, const wchar_t* query)
-{
-    PROPVARIANT pv;
-    PropVariantInit(&pv);
-    std::wstring result;
-
-    if (SUCCEEDED(reader->GetMetadataByName(query, &pv)))
-    {
-        if (pv.vt == VT_LPWSTR && pv.pwszVal)
-        {
-            result = pv.pwszVal;
-        }
-        else if (pv.vt == VT_LPSTR && pv.pszVal)
-        {
-            int len = MultiByteToWideChar(CP_ACP, 0, pv.pszVal, -1, nullptr, 0);
-            if (len > 1)
-            {
-                result.resize(len - 1);
-                MultiByteToWideChar(CP_ACP, 0, pv.pszVal, -1, result.data(), len);
-            }
-        }
-    }
-
-    PropVariantClear(&pv);
-    // Trailing null veya boşlukları temizle
-    while (!result.empty() && (result.back() == L'\0' || result.back() == L' '))
-        result.pop_back();
-    return result;
-}
-
-// PROPVARIANT içindeki RATIONAL değerini biçimlendirilmiş string olarak döner.
-// mode: L"aperture" → "f/2.8" | L"shutter" → "1/500s"
-static std::wstring WicQueryRational(IWICMetadataQueryReader* reader, const wchar_t* query,
-                                     const wchar_t* mode)
-{
-    PROPVARIANT pv;
-    PropVariantInit(&pv);
-    std::wstring result;
-
-    if (SUCCEEDED(reader->GetMetadataByName(query, &pv)))
-    {
-        ULONG num = 0, den = 1;
-        bool valid = false;
-
-        if (pv.vt == VT_UI8)
-        {
-            // WIC packs RATIONAL as UI8: LowPart=numerator, HighPart=denominator
-            num   = pv.uhVal.LowPart;
-            den   = pv.uhVal.HighPart;
-            valid = (den > 0);
-        }
-        else if (pv.vt == VT_R8)
-        {
-            // Bazı codec'ler double olarak döner
-            double val = pv.dblVal;
-            if (val > 0.0)
-            {
-                if (wcscmp(mode, L"aperture") == 0)
-                {
-                    wchar_t buf[32];
-                    swprintf_s(buf, L"f/%.1f", val);
-                    result = buf;
-                }
-                else
-                {
-                    wchar_t buf[32];
-                    ULONG denom = static_cast<ULONG>(1.0 / val + 0.5);
-                    if (denom > 1)
-                        swprintf_s(buf, L"1/%lus", denom);
-                    else
-                        swprintf_s(buf, L"%.1fs", val);
-                    result = buf;
-                }
-            }
-        }
-
-        if (valid)
-        {
-            wchar_t buf[32];
-            if (wcscmp(mode, L"aperture") == 0)
-            {
-                swprintf_s(buf, L"f/%.1f", static_cast<double>(num) / den);
-            }
-            else  // shutter
-            {
-                if (num > 0 && den > num)
-                    swprintf_s(buf, L"1/%lus", den / num);
-                else if (num > 0)
-                    swprintf_s(buf, L"%.1fs", static_cast<double>(num) / den);
-                else
-                    buf[0] = L'\0';
-            }
-            result = buf;
-        }
-    }
-
-    PropVariantClear(&pv);
-    return result;
-}
 
 // --- Arka plan decode ---
 
@@ -148,119 +46,41 @@ static void StartDecode(HWND hwnd, const std::wstring& path)
         result->path       = path;
         result->generation = gen;
 
-        auto post = [&]() {
-            CoUninitialize();
-            PostMessage(hwnd, WM_DECODE_DONE, 0, reinterpret_cast<LPARAM>(result));
-        };
-
-        IWICImagingFactory* wicFactory = nullptr;
-        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr,
-            CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wicFactory))))
-        {
-            post(); return;
-        }
-
-        IWICBitmapDecoder* decoder = nullptr;
-        HRESULT hr = wicFactory->CreateDecoderFromFilename(
-            path.c_str(), nullptr, GENERIC_READ,
-            WICDecodeMetadataCacheOnLoad, &decoder);
-        if (FAILED(hr)) { wicFactory->Release(); post(); return; }
-
-        IWICBitmapFrameDecode* frame = nullptr;
-        hr = decoder->GetFrame(0, &frame);
-        decoder->Release();
-        if (FAILED(hr)) { wicFactory->Release(); post(); return; }
-
-        IWICFormatConverter* converter = nullptr;
-        hr = wicFactory->CreateFormatConverter(&converter);
-        if (FAILED(hr)) { frame->Release(); wicFactory->Release(); post(); return; }
-
-        // converter->Initialize çağrısından sonra frame'i tutmaya devam et (metadata için)
-        hr = converter->Initialize(
-            frame, GUID_WICPixelFormat32bppPBGRA,
-            WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeMedianCut);
-        if (FAILED(hr))
-        {
-            frame->Release(); converter->Release(); wicFactory->Release();
-            post(); return;
-        }
-
-        UINT w = 0, h = 0;
-        converter->GetSize(&w, &h);
-        result->width  = w;
-        result->height = h;
-
-        UINT stride = w * 4;
-        result->pixels.resize(static_cast<size_t>(stride) * h);
-
-        hr = converter->CopyPixels(nullptr, stride, stride * h, result->pixels.data());
-        if (FAILED(hr)) result->pixels.clear();
-
-        converter->Release();
-
-        // ── Temel ImageInfo ──────────────────────────────────────────────────
-        result->info.width  = static_cast<int>(w);
-        result->info.height = static_cast<int>(h);
-
-        // Dosya adı
+        // ── Dosya adı (her zaman doldur — hata durumunda da gösterilir) ──────
         auto sep = path.rfind(L'\\');
         if (sep == std::wstring::npos) sep = path.rfind(L'/');
         result->info.filename = (sep != std::wstring::npos) ? path.substr(sep + 1) : path;
 
-        // Format (uzantıdan)
-        auto dotPos = path.rfind(L'.');
-        if (dotPos != std::wstring::npos)
-        {
-            std::wstring ext = path.substr(dotPos + 1);
-            for (auto& c : ext) c = towupper(c);
-            if (ext == L"JPG") ext = L"JPEG";
-            result->info.format = ext;
-        }
-
-        // Dosya boyutu
+        // ── Dosya boyutu ─────────────────────────────────────────────────────
         WIN32_FILE_ATTRIBUTE_DATA fad{};
         if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad))
             result->info.fileSizeBytes =
                 (static_cast<int64_t>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
 
-        // ── EXIF Metadata (frame hâlâ geçerli) ──────────────────────────────
-        IWICMetadataQueryReader* mqr = nullptr;
-        if (SUCCEEDED(frame->GetMetadataQueryReader(&mqr)) && mqr)
+        // ── Decode (tüm format desteği ImageDecoder'da) ──────────────────────
+        DecodeOutput decoded;
+        if (DecodeImage(path, decoded) && !decoded.pixels.empty())
         {
-            result->info.cameraMake   = WicQueryString(mqr, L"/app1/ifd/{ushort=271}");
-            result->info.cameraModel  = WicQueryString(mqr, L"/app1/ifd/{ushort=272}");
-            result->info.dateTaken    = WicQueryString(mqr, L"/app1/ifd/exif/{ushort=36867}");
-            result->info.aperture     = WicQueryRational(mqr, L"/app1/ifd/exif/{ushort=33437}", L"aperture");
-            result->info.shutterSpeed = WicQueryRational(mqr, L"/app1/ifd/exif/{ushort=33434}", L"shutter");
-
-            // ISO — VT_UI2
-            PROPVARIANT pvIso;
-            PropVariantInit(&pvIso);
-            if (SUCCEEDED(mqr->GetMetadataByName(L"/app1/ifd/exif/{ushort=34855}", &pvIso)))
-            {
-                if (pvIso.vt == VT_UI2)
-                {
-                    wchar_t buf[16];
-                    swprintf_s(buf, L"%u", static_cast<unsigned>(pvIso.uiVal));
-                    result->info.iso = buf;
-                }
-                else if (pvIso.vt == VT_UI4)
-                {
-                    wchar_t buf[16];
-                    swprintf_s(buf, L"%lu", pvIso.ulVal);
-                    result->info.iso = buf;
-                }
-                PropVariantClear(&pvIso);
-            }
-
-            mqr->Release();
+            result->pixels            = std::move(decoded.pixels);
+            result->width             = decoded.width;
+            result->height            = decoded.height;
+            result->info.width        = static_cast<int>(decoded.width);
+            result->info.height       = static_cast<int>(decoded.height);
+            result->info.format       = decoded.format;
+            result->info.dateTaken    = decoded.dateTaken;
+            result->info.cameraMake   = decoded.cameraMake;
+            result->info.cameraModel  = decoded.cameraModel;
+            result->info.aperture     = decoded.aperture;
+            result->info.shutterSpeed = decoded.shutterSpeed;
+            result->info.iso          = decoded.iso;
+        }
+        else
+        {
+            result->info.errorMessage = L"Bu dosya açılamıyor";
         }
 
-        // Frame artık serbest bırakılabilir (metadata okunduktan sonra)
-        frame->Release();
-
-        wicFactory->Release();
-        post();
+        CoUninitialize();
+        PostMessage(hwnd, WM_DECODE_DONE, 0, reinterpret_cast<LPARAM>(result));
     });
 }
 
@@ -576,12 +396,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         auto* result = reinterpret_cast<DecodeResult*>(lParam);
 
-        if (result->generation == g_decodeGeneration.load() &&
-            !result->pixels.empty() && g_renderer)
+        if (result->generation == g_decodeGeneration.load() && g_renderer)
         {
-            g_renderer->LoadImageFromPixels(
-                result->pixels.data(), result->width, result->height, result->path);
-            g_imageInfo = result->info;  // Metadata'yı global'e aktar
+            if (!result->pixels.empty())
+            {
+                g_renderer->LoadImageFromPixels(
+                    result->pixels.data(), result->width, result->height, result->path);
+            }
+            else
+            {
+                // Decode başarısız — eski bitmap'i temizle, hata mesajı göster
+                g_renderer->ClearImage();
+            }
+            g_imageInfo = result->info;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
 

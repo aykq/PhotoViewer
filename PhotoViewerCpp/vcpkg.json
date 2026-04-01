@@ -1,0 +1,11 @@
+{
+  "name": "photoviewer",
+  "version": "0.1.0",
+  "builtin-baseline": "dbbd673624c057174dd51ef85758951032717715",
+  "dependencies": [
+    "libwebp",
+    "libheif",
+    "libjxl",
+    "libavif"
+  ]
+}

@@ -367,3 +367,4 @@ build_output.txt
 memory-bank/
 AGENTS.md
 .claude/settings.local.json
+PhotoViewerCpp/vcpkg_installed/

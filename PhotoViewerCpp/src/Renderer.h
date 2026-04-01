@@ -38,14 +38,16 @@ struct ImageInfo
     int          width         = 0;
     int          height        = 0;
     int64_t      fileSizeBytes = 0;
-    std::wstring format;         // e.g. L"JPEG"
+    std::wstring format;           // e.g. L"JPEG"
     // EXIF alanları — mevcut değilse boş wstring
     std::wstring dateTaken;
     std::wstring cameraMake;
     std::wstring cameraModel;
-    std::wstring aperture;       // e.g. L"f/2.8"
-    std::wstring shutterSpeed;   // e.g. L"1/500s"
+    std::wstring aperture;         // e.g. L"f/2.8"
+    std::wstring shutterSpeed;     // e.g. L"1/500s"
     std::wstring iso;
+    // Decode hatası — boş değilse ekranda gösterilir
+    std::wstring errorMessage;
 };
 
 // Görüntünün ekrandaki dönüşüm durumu.
@@ -83,6 +85,9 @@ public:
     bool LoadImageFromPixels(const uint8_t* pixels, UINT width, UINT height,
                              const std::wstring& path);
 
+    // Mevcut bitmap'i serbest bırak (decode hatası veya gezinme öncesi temizlik)
+    void ClearImage();
+
 private:
     // GPU cihazına bağlı kaynakları oluştur
     HRESULT CreateDeviceResources();
@@ -113,7 +118,6 @@ private:
     ID2D1SolidColorBrush*  m_overlayBrush = nullptr;   // Yarı saydam siyah arka plan
     ID2D1SolidColorBrush*  m_activeBrush  = nullptr;   // Info button aktif durumu
 
-    IWICImagingFactory*    m_wicFactory   = nullptr;   // WIC fabrikası (GPU kurtarma için)
     ID2D1Bitmap*           m_bitmap       = nullptr;   // GPU'ya yüklenmiş görüntü
     std::wstring           m_imagePath;                // D2DERR_RECREATE_TARGET'ta yeniden yüklemek için
 };

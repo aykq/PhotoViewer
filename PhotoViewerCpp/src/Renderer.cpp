@@ -1,4 +1,5 @@
 #include "Renderer.h"
+#include "ImageDecoder.h"
 #include <cwchar>
 
 Renderer::Renderer(HWND hwnd) : m_hwnd(hwnd)
@@ -76,7 +77,6 @@ Renderer::~Renderer()
     if (m_labelFormat)   { m_labelFormat->Release();   m_labelFormat = nullptr; }
     if (m_textFormat)    { m_textFormat->Release();    m_textFormat = nullptr; }
     if (m_dwriteFactory) { m_dwriteFactory->Release(); m_dwriteFactory = nullptr; }
-    if (m_wicFactory)    { m_wicFactory->Release();    m_wicFactory = nullptr; }
     if (m_factory)       { m_factory->Release();       m_factory = nullptr; }
 }
 
@@ -147,45 +147,17 @@ bool Renderer::LoadImage(const std::wstring& path)
 {
     if (m_bitmap) { m_bitmap->Release(); m_bitmap = nullptr; }
 
-    if (!m_wicFactory)
-    {
-        HRESULT hr = CoCreateInstance(
-            CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-            IID_PPV_ARGS(&m_wicFactory)
-        );
-        if (FAILED(hr)) return false;
-    }
+    DecodeOutput decoded;
+    if (!DecodeImage(path, decoded) || decoded.pixels.empty())
+        return false;
 
-    IWICBitmapDecoder* decoder = nullptr;
-    HRESULT hr = m_wicFactory->CreateDecoderFromFilename(
-        path.c_str(), nullptr, GENERIC_READ,
-        WICDecodeMetadataCacheOnLoad, &decoder
-    );
-    if (FAILED(hr)) return false;
+    return LoadImageFromPixels(decoded.pixels.data(), decoded.width, decoded.height, path);
+}
 
-    IWICBitmapFrameDecode* frame = nullptr;
-    hr = decoder->GetFrame(0, &frame);
-    decoder->Release();
-    if (FAILED(hr)) return false;
-
-    IWICFormatConverter* converter = nullptr;
-    hr = m_wicFactory->CreateFormatConverter(&converter);
-    if (FAILED(hr)) { frame->Release(); return false; }
-
-    hr = converter->Initialize(
-        frame, GUID_WICPixelFormat32bppPBGRA,
-        WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeMedianCut
-    );
-    frame->Release();
-    if (FAILED(hr)) { converter->Release(); return false; }
-
-    if (FAILED(CreateDeviceResources())) { converter->Release(); return false; }
-
-    hr = m_renderTarget->CreateBitmapFromWicBitmap(converter, nullptr, &m_bitmap);
-    converter->Release();
-
-    if (SUCCEEDED(hr)) { m_imagePath = path; return true; }
-    return false;
+void Renderer::ClearImage()
+{
+    if (m_bitmap) { m_bitmap->Release(); m_bitmap = nullptr; }
+    m_imagePath.clear();
 }
 
 // ─── Navigation Arrows ────────────────────────────────────────────────────────
@@ -416,6 +388,20 @@ void Renderer::Render(const ViewState& vs, const ImageInfo* info)
 
     // Arka plan: koyu gri (#1E1E1E)
     m_renderTarget->Clear(D2D1::ColorF(0.118f, 0.118f, 0.118f));
+
+    // Bitmap yoksa ve decode hatası varsa hata mesajı göster
+    if (!m_bitmap && info && !info->errorMessage.empty() &&
+        m_textFormat && m_whiteBrush)
+    {
+        D2D1_SIZE_F sz = m_renderTarget->GetSize();
+        m_renderTarget->DrawText(
+            info->errorMessage.c_str(),
+            static_cast<UINT32>(info->errorMessage.size()),
+            m_textFormat,
+            D2D1::RectF(0, 0, sz.width, sz.height),
+            m_whiteBrush
+        );
+    }
 
     if (m_bitmap)
     {
