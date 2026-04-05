@@ -77,9 +77,12 @@ static void StartDecode(HWND hwnd, const std::wstring& path)
             result->info.aperture     = decoded.aperture;
             result->info.shutterSpeed = decoded.shutterSpeed;
             result->info.iso          = decoded.iso;
-            result->info.gpsLatitude  = decoded.gpsLatitude;
-            result->info.gpsLongitude = decoded.gpsLongitude;
-            result->info.gpsAltitude  = decoded.gpsAltitude;
+            result->info.gpsLatitude   = decoded.gpsLatitude;
+            result->info.gpsLongitude  = decoded.gpsLongitude;
+            result->info.gpsAltitude   = decoded.gpsAltitude;
+            result->info.hasGpsDecimal = decoded.hasGpsDecimal;
+            result->info.gpsLatDecimal = decoded.gpsLatDecimal;
+            result->info.gpsLonDecimal = decoded.gpsLonDecimal;
         }
         else
         {
@@ -177,6 +180,11 @@ static void SaveSettings()
 
 static void LoadSettings()
 {
+    // Sistem locale'ini varsayılan olarak kullan (LOCALE_ITIME: "0"=12h, "1"=24h)
+    wchar_t localeBuf[4] = {};
+    GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_ITIME, localeBuf, _countof(localeBuf));
+    g_viewState.use12HourTime = (localeBuf[0] != L'1');
+
     HKEY hKey;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
     {
@@ -353,20 +361,39 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_dragging = false;
         ReleaseCapture();
 
-        // Panel alanı tıklaması — yalnızca date toggle kontrol edilir
+        // Panel alanı tıklaması — date toggle ve GPS link kontrol edilir
         if (g_clickInPanel)
         {
             g_clickInPanel = false;
             float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
-            if (delta < 5.0f && g_renderer && g_renderer->IsDateToggleVisible())
+            if (delta < 5.0f && g_renderer)
             {
-                D2D1_RECT_F r = g_renderer->GetDateToggleRect();
-                if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
+                // Date toggle
+                if (g_renderer->IsDateToggleVisible())
                 {
-                    // Sol yarı = 24h, sağ yarı = 12h
-                    float midX = (r.left + r.right) * 0.5f;
-                    g_viewState.use12HourTime = (mx >= midX);
-                    InvalidateRect(hwnd, nullptr, FALSE);
+                    D2D1_RECT_F r = g_renderer->GetDateToggleRect();
+                    if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
+                    {
+                        float midX = (r.left + r.right) * 0.5f;
+                        g_viewState.use12HourTime = (mx >= midX);
+                        SaveSettings();
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                }
+                // GPS link
+                if (g_renderer->IsGpsLinkVisible() && g_imageInfo.hasGpsDecimal)
+                {
+                    D2D1_RECT_F r = g_renderer->GetGpsLinkRect();
+                    if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
+                    {
+                        wchar_t url[256];
+                        swprintf_s(url,
+                            L"https://www.openstreetmap.org/?mlat=%.6f&mlon=%.6f&zoom=15",
+                            g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                        ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+                        return 0;
+                    }
                 }
             }
             return 0;
@@ -454,6 +481,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
+
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT && g_renderer && g_renderer->IsGpsLinkVisible())
+        {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            float cx = static_cast<float>(pt.x);
+            float cy = static_cast<float>(pt.y);
+            D2D1_RECT_F r = g_renderer->GetGpsLinkRect();
+            if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom)
+            {
+                SetCursor(LoadCursor(nullptr, IDC_HAND));
+                return TRUE;
+            }
+        }
+        break;
 
     case WM_ERASEBKGND:
         return 1;

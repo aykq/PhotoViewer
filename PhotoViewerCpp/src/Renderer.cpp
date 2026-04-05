@@ -65,6 +65,18 @@ Renderer::Renderer(HWND hwnd) : m_hwnd(hwnd)
             m_indexFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             m_indexFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         }
+
+        // Time toggle pill: 10 DIP Regular, ortalı
+        m_dwriteFactory->CreateTextFormat(
+            L"Segoe UI", nullptr,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+            10.0f, L"", &m_toggleFormat
+        );
+        if (m_toggleFormat)
+        {
+            m_toggleFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            m_toggleFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
     }
 }
 
@@ -72,6 +84,7 @@ Renderer::~Renderer()
 {
     DiscardDeviceResources();
 
+    if (m_toggleFormat)  { m_toggleFormat->Release();  m_toggleFormat = nullptr; }
     if (m_indexFormat)   { m_indexFormat->Release();   m_indexFormat = nullptr; }
     if (m_valueFormat)   { m_valueFormat->Release();   m_valueFormat = nullptr; }
     if (m_labelFormat)   { m_labelFormat->Release();   m_labelFormat = nullptr; }
@@ -231,7 +244,7 @@ void Renderer::DrawIndexBar(const ViewState& vs)
 // ─── Tarih biçimlendirme yardımcısı ──────────────────────────────────────────
 
 // EXIF ham string: "YYYY:MM:DD HH:MM:SS"
-// 24h: "2023-07-15  14:30"   12h: "2023-07-15  2:30 PM"
+// 24h: "15-07-2023  14:30"   12h: "15-07-2023  2:30 PM"
 static std::wstring FormatDateTaken(const std::wstring& raw, bool use12h)
 {
     int yr = 0, mo = 0, dy = 0, hr = 0, mi = 0, se = 0;
@@ -244,11 +257,11 @@ static std::wstring FormatDateTaken(const std::wstring& raw, bool use12h)
             const wchar_t* ampm = (hr >= 12) ? L"PM" : L"AM";
             int hr12 = hr % 12;
             if (hr12 == 0) hr12 = 12;
-            swprintf_s(buf, L"%04d-%02d-%02d  %d:%02d %ls", yr, mo, dy, hr12, mi, ampm);
+            swprintf_s(buf, L"%02d-%02d-%04d  %d:%02d %ls", dy, mo, yr, hr12, mi, ampm);
         }
         else
         {
-            swprintf_s(buf, L"%04d-%02d-%02d  %02d:%02d", yr, mo, dy, hr, mi);
+            swprintf_s(buf, L"%02d-%02d-%04d  %02d:%02d", dy, mo, yr, hr, mi);
         }
         return buf;
     }
@@ -260,6 +273,7 @@ static std::wstring FormatDateTaken(const std::wstring& raw, bool use12h)
 void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
 {
     m_dateToggleVisible = false;
+    m_gpsLinkVisible    = false;
     if (!m_overlayBrush || !m_whiteBrush) return;
 
     D2D1_SIZE_F sz = m_renderTarget->GetSize();
@@ -268,9 +282,19 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
     D2D1_RECT_F bg = D2D1::RectF(sz.width - vs.panelAnimWidth, 0.0f, sz.width, sz.height);
     m_renderTarget->FillRectangle(bg, m_overlayBrush);
 
-    if (!info || !m_labelFormat || !m_valueFormat) return;
+    // Animasyon sırasında metin taşmasını önlemek için clip bölgesi
+    m_renderTarget->PushAxisAlignedClip(bg, D2D1_ANTIALIAS_MODE_ALIASED);
 
-    float x0 = sz.width - vs.panelAnimWidth + PanelLayout::PadX;
+    if (!info || !m_labelFormat || !m_valueFormat)
+    {
+        m_renderTarget->PopAxisAlignedClip();
+        return;
+    }
+
+    // Metin koordinatları her zaman tam panel genişliğine sabitlenir.
+    // Clip bölgesi (bg) animasyon sırasında fazlayı keser; böylece
+    // panel daralırken metin yeniden kırılmaz.
+    float x0 = sz.width - PanelLayout::Width + PanelLayout::PadX;
     float x1 = sz.width - PanelLayout::PadX;
     float y  = PanelLayout::PadX;
 
@@ -358,14 +382,62 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
         );
         y += 10.0f;
 
-        // Date Taken — etiket + değer + segmented time toggle
+        // Date Taken — etiket (+ inline toggle) + değer
         if (!info->dateTaken.empty())
         {
-            // Etiket
+            // ── Inline segmented pill: [ 24h | 12h ] — "Date Taken" metninin hemen sağında
+            constexpr float kPillW = 54.0f;
+            constexpr float kPillH = 14.0f;
+            constexpr float kPillR = 7.0f;
+            constexpr float kSegW  = kPillW * 0.5f;
+
+            const float px = x1 - kPillW;                  // sağa yaslanmış
+            const float py = y + (kLabelH - kPillH) * 0.5f;
+            const bool  leftActive = !vs.use12HourTime;
+
+            // Etiket — pill'in soluna kadar
             m_renderTarget->DrawText(
                 L"Date Taken", static_cast<UINT32>(wcslen(L"Date Taken")),
-                m_labelFormat, D2D1::RectF(x0, y, x1, y + kLabelH), m_whiteBrush
+                m_labelFormat, D2D1::RectF(x0, y, px - 6.0f, y + kLabelH), m_whiteBrush
             );
+
+            // Aktif segment dolgusu
+            D2D1_ROUNDED_RECT activeRR;
+            if (leftActive)
+                activeRR = { D2D1::RectF(px,         py, px + kSegW,  py + kPillH), kPillR, kPillR };
+            else
+                activeRR = { D2D1::RectF(px + kSegW, py, px + kPillW, py + kPillH), kPillR, kPillR };
+            m_renderTarget->FillRoundedRectangle(activeRR, m_toggleFillBrush);
+
+            // Pill dış çerçevesi
+            D2D1_ROUNDED_RECT pillRR = { D2D1::RectF(px, py, px + kPillW, py + kPillH), kPillR, kPillR };
+            m_whiteBrush->SetOpacity(0.28f);
+            m_renderTarget->DrawRoundedRectangle(pillRR, m_whiteBrush, 1.0f);
+
+            // Orta ayraç çizgisi
+            m_whiteBrush->SetOpacity(0.20f);
+            m_renderTarget->DrawLine(
+                D2D1::Point2F(px + kSegW, py + 3.0f),
+                D2D1::Point2F(px + kSegW, py + kPillH - 3.0f),
+                m_whiteBrush, 0.75f
+            );
+
+            // "24h" / "12h" metinleri — 10px toggle formatı
+            m_whiteBrush->SetOpacity(leftActive ? 1.0f : 0.40f);
+            m_renderTarget->DrawText(
+                L"24h", 3, m_toggleFormat,
+                D2D1::RectF(px, py, px + kSegW, py + kPillH), m_whiteBrush
+            );
+            m_whiteBrush->SetOpacity(leftActive ? 0.40f : 1.0f);
+            m_renderTarget->DrawText(
+                L"12h", 3, m_toggleFormat,
+                D2D1::RectF(px + kSegW, py, px + kPillW, py + kPillH), m_whiteBrush
+            );
+            m_whiteBrush->SetOpacity(1.0f);
+
+            // Hit-test rect'ini kaydet (tüm pill)
+            m_dateToggleRect    = D2D1::RectF(px, py, px + kPillW, py + kPillH);
+            m_dateToggleVisible = true;
 
             // Değer
             std::wstring dateFormatted = FormatDateTaken(info->dateTaken, vs.use12HourTime);
@@ -375,61 +447,7 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
                 D2D1::RectF(x0, y + kLabelH + kGap, x1, y + kLabelH + kGap + kValueH),
                 m_whiteBrush
             );
-            y += kLabelH + kGap + kValueH + 6.0f;
-
-            // ── Segmented pill control: [ 24h | 12h ] ─────────────────────────
-            constexpr float kPillW = 78.0f;
-            constexpr float kPillH = 22.0f;
-            constexpr float kPillR = 11.0f;   // tam yuvarlak pill
-            constexpr float kSegW  = kPillW * 0.5f;
-
-            const float px = x0;
-            const float py = y;
-            const bool  leftActive = !vs.use12HourTime;  // sol = 24h, sağ = 12h
-
-            // Aktif segment dolgusu
-            D2D1_ROUNDED_RECT activeRR;
-            if (leftActive)
-                activeRR = { D2D1::RectF(px,        py, px + kSegW,  py + kPillH), kPillR, kPillR };
-            else
-                activeRR = { D2D1::RectF(px + kSegW, py, px + kPillW, py + kPillH), kPillR, kPillR };
-            m_renderTarget->FillRoundedRectangle(activeRR, m_toggleFillBrush);
-
-            // Pill dış çerçevesi
-            D2D1_ROUNDED_RECT pillRR = {
-                D2D1::RectF(px, py, px + kPillW, py + kPillH), kPillR, kPillR
-            };
-            m_whiteBrush->SetOpacity(0.28f);
-            m_renderTarget->DrawRoundedRectangle(pillRR, m_whiteBrush, 1.0f);
-
-            // Orta ayraç çizgisi
-            m_whiteBrush->SetOpacity(0.20f);
-            m_renderTarget->DrawLine(
-                D2D1::Point2F(px + kSegW, py + 4.0f),
-                D2D1::Point2F(px + kSegW, py + kPillH - 4.0f),
-                m_whiteBrush, 0.75f
-            );
-
-            // "24h" metni
-            m_whiteBrush->SetOpacity(leftActive ? 1.0f : 0.40f);
-            m_renderTarget->DrawText(
-                L"24h", 3, m_indexFormat,
-                D2D1::RectF(px, py, px + kSegW, py + kPillH), m_whiteBrush
-            );
-
-            // "12h" metni
-            m_whiteBrush->SetOpacity(leftActive ? 0.40f : 1.0f);
-            m_renderTarget->DrawText(
-                L"12h", 3, m_indexFormat,
-                D2D1::RectF(px + kSegW, py, px + kPillW, py + kPillH), m_whiteBrush
-            );
-            m_whiteBrush->SetOpacity(1.0f);
-
-            // Hit-test rect'ini kaydet (tüm pill)
-            m_dateToggleRect    = D2D1::RectF(px, py, px + kPillW, py + kPillH);
-            m_dateToggleVisible = true;
-
-            y += kPillH + 10.0f;
+            y += kRowH;
         }
 
         // Camera make + model on one line
@@ -457,21 +475,58 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
             );
             y += 10.0f;
 
-            // Lat / Lon aynı satırda tek değer olarak göster
-            if (!info->gpsLatitude.empty() && !info->gpsLongitude.empty())
+            bool bothCoords = !info->gpsLatitude.empty() && !info->gpsLongitude.empty();
+            std::wstring coords = bothCoords
+                ? (info->gpsLatitude + L"  " + info->gpsLongitude)
+                : (info->gpsLatitude.empty() ? info->gpsLongitude : info->gpsLatitude);
+
+            // GPS Location etiket satırı — harita varsa küçük "↗" hint'i ekle
             {
-                std::wstring coords = info->gpsLatitude + L"  " + info->gpsLongitude;
-                DrawRow(L"GPS Location", coords);
+                std::wstring label = info->hasGpsDecimal
+                    ? L"GPS Location \u2197"   // ↗ = tıklanabilir olduğunu gösterir
+                    : L"GPS Location";
+                m_renderTarget->DrawText(
+                    label.c_str(), static_cast<UINT32>(label.size()),
+                    m_labelFormat, D2D1::RectF(x0, y, x1, y + kLabelH),
+                    m_whiteBrush
+                );
+            }
+
+            // Koordinat değeri — harita linki varsa altı çizili
+            float valueY = y + kLabelH + kGap;
+            if (info->hasGpsDecimal && m_dwriteFactory)
+            {
+                IDWriteTextLayout* layout = nullptr;
+                if (SUCCEEDED(m_dwriteFactory->CreateTextLayout(
+                    coords.c_str(), static_cast<UINT32>(coords.size()),
+                    m_valueFormat, x1 - x0, kValueH * 2.0f, &layout)))
+                {
+                    DWRITE_TEXT_RANGE all = { 0, static_cast<UINT32>(coords.size()) };
+                    layout->SetUnderline(TRUE, all);
+                    m_renderTarget->DrawTextLayout(D2D1::Point2F(x0, valueY), layout, m_whiteBrush);
+
+                    DWRITE_TEXT_METRICS tm{};
+                    layout->GetMetrics(&tm);
+                    m_gpsLinkRect    = D2D1::RectF(x0, valueY, x0 + tm.widthIncludingTrailingWhitespace, valueY + tm.height);
+                    m_gpsLinkVisible = true;
+                    layout->Release();
+                }
             }
             else
             {
-                DrawRow(L"GPS Location", info->gpsLatitude.empty()
-                    ? info->gpsLongitude : info->gpsLatitude);
+                m_renderTarget->DrawText(
+                    coords.c_str(), static_cast<UINT32>(coords.size()),
+                    m_valueFormat, D2D1::RectF(x0, valueY, x1, valueY + kValueH),
+                    m_whiteBrush
+                );
             }
+            y += kRowH;
 
             DrawRow(L"Altitude", info->gpsAltitude);
         }
     }
+
+    m_renderTarget->PopAxisAlignedClip();
 }
 
 // ─── Info Button ─────────────────────────────────────────────────────────────

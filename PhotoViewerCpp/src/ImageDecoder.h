@@ -20,9 +20,13 @@ struct DecodeOutput
     std::wstring shutterSpeed;     // ör. L"1/500s"
     std::wstring iso;
     // GPS — yoksa boş
-    std::wstring gpsLatitude;      // ör. L"40°26'47.12\"N"
-    std::wstring gpsLongitude;     // ör. L"79°58'30.45\"W"
+    std::wstring gpsLatitude;      // ör. L"40°26′47.12″N"
+    std::wstring gpsLongitude;     // ör. L"79°58′30.45″W"
     std::wstring gpsAltitude;      // ör. L"123.4 m"
+    // GPS ondalık derece — harita linki için; hasGpsDecimal false ise geçersiz
+    bool         hasGpsDecimal  = false;
+    double       gpsLatDecimal  = 0.0;  // N = pozitif, S = negatif
+    double       gpsLonDecimal  = 0.0;  // E = pozitif, W = negatif
 };
 
 // Desteklenen tüm formatları 32bpp BGRA pre-multiplied piksellere decode eder.

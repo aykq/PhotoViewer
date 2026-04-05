@@ -50,6 +50,10 @@ struct ImageInfo
     std::wstring gpsLatitude;
     std::wstring gpsLongitude;
     std::wstring gpsAltitude;
+    // GPS ondalık derece — harita linki için; hasGpsDecimal false ise geçersiz
+    bool         hasGpsDecimal  = false;
+    double       gpsLatDecimal  = 0.0;
+    double       gpsLonDecimal  = 0.0;
     // Decode hatası — boş değilse ekranda gösterilir
     std::wstring errorMessage;
 };
@@ -99,6 +103,10 @@ public:
     D2D1_RECT_F GetDateToggleRect()    const { return m_dateToggleRect; }
     bool        IsDateToggleVisible()  const { return m_dateToggleVisible; }
 
+    // GPS link rect — tıklanabilir koordinat satırı; hasGpsDecimal varsa görünür.
+    D2D1_RECT_F GetGpsLinkRect()    const { return m_gpsLinkRect; }
+    bool        IsGpsLinkVisible()  const { return m_gpsLinkVisible; }
+
 private:
     // GPU cihazına bağlı kaynakları oluştur
     HRESULT CreateDeviceResources();
@@ -123,6 +131,7 @@ private:
     IDWriteTextFormat*     m_labelFormat   = nullptr;  // 13 DIP Regular, left — panel etiketler
     IDWriteTextFormat*     m_valueFormat   = nullptr;  // 13 DIP Semi-Bold, left — panel değerler
     IDWriteTextFormat*     m_indexFormat   = nullptr;  // 14 DIP Semi-Bold, center — index bar
+    IDWriteTextFormat*     m_toggleFormat  = nullptr;  // 10 DIP Regular,    center — time toggle pill
 
     // Fırçalar (cihaza bağlı, render target ile birlikte oluşturulur/yok edilir)
     ID2D1SolidColorBrush*  m_whiteBrush       = nullptr;   // Metin için
@@ -136,4 +145,8 @@ private:
     // Date toggle badge — DrawInfoPanel tarafından doldurulur
     D2D1_RECT_F            m_dateToggleRect    = {};
     bool                   m_dateToggleVisible = false;
+
+    // GPS link rect — DrawInfoPanel tarafından doldurulur
+    D2D1_RECT_F            m_gpsLinkRect    = {};
+    bool                   m_gpsLinkVisible = false;
 };
