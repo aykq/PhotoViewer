@@ -420,6 +420,7 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
     }
 
     DrawRow(L"Format", info->format);
+    DrawRow(L"Color Profile", info->iccProfileName);
 
     // EXIF section — only if at least one field is populated
     bool hasExif = !info->dateTaken.empty()  || !info->cameraMake.empty()  ||

@@ -38,6 +38,8 @@ struct DecodeOutput
     double       gpsLonDecimal  = 0.0;  // E = pozitif, W = negatif
     // Nominatim reverse geocoding sonucu — ör. L"Merzifon, Amasya, Türkiye"
     std::wstring gpsLocationName;
+    // ICC renk profili adı — ör. L"Adobe RGB (1998)"; yoksa boş
+    std::wstring iccProfileName;
     // Animasyon frame'leri — boş = statik görüntü (pixels kullanılır); dolu = animated
     std::vector<AnimFrame> frames;
 };

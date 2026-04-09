@@ -91,6 +91,7 @@ static void StartDecode(HWND hwnd, const std::wstring& path)
             result->info.gpsLatDecimal   = decoded.gpsLatDecimal;
             result->info.gpsLonDecimal   = decoded.gpsLonDecimal;
             result->info.gpsLocationName = decoded.gpsLocationName;
+            result->info.iccProfileName  = decoded.iccProfileName;
         }
         else
         {

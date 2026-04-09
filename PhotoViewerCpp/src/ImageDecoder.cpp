@@ -18,6 +18,9 @@
 
 #pragma comment(lib, "libwebpdemux.lib")
 
+#include <lcms2.h>
+#pragma comment(lib, "lcms2.lib")
+
 // ─── Dosya okuma yardımcısı ───────────────────────────────────────────────────
 
 static std::vector<uint8_t> ReadFileBytes(const std::wstring& path)
@@ -246,6 +249,46 @@ static std::wstring WicQueryGPSAltitude(IWICMetadataQueryReader* r,
     }
     PropVariantClear(&pv);
     return result;
+}
+
+// ─── ICC renk profili → sRGB dönüşümü (lcms2) ────────────────────────────────
+// Piksel tamponu BGRA düz alfa (premultiply öncesi) olmalıdır.
+// Profil adını (Description) döner; dönüşüm uygulanamadıysa sadece adı döner.
+static std::wstring ApplyIccProfile(uint8_t* pixels, UINT w, UINT h,
+                                     const uint8_t* iccData, size_t iccSize)
+{
+    if (!iccData || iccSize == 0 || !pixels) return {};
+
+    cmsHPROFILE src = cmsOpenProfileFromMem(iccData, static_cast<cmsUInt32Number>(iccSize));
+    if (!src) return {};
+
+    // Profil açıklama adını oku (önce tr-TR, sonra en-US)
+    wchar_t descBuf[256] = {};
+    if (cmsGetProfileInfo(src, cmsInfoDescription, "tr", "TR", descBuf, 256) == 0)
+        cmsGetProfileInfo(src, cmsInfoDescription, "en", "US", descBuf, 256);
+    std::wstring profileName = descBuf;
+    // Sonundaki boşlukları temizle
+    while (!profileName.empty() && (profileName.back() == L' ' || profileName.back() == L'\0'))
+        profileName.pop_back();
+
+    cmsHPROFILE dst = cmsCreate_sRGBProfile();
+    if (!dst) { cmsCloseProfile(src); return profileName; }
+
+    // TYPE_BGRA_8: 8bpp BGRA (alpha extra channel, renk kanalları B-G-R)
+    cmsHTRANSFORM xform = cmsCreateTransform(
+        src, TYPE_BGRA_8,
+        dst, TYPE_BGRA_8,
+        INTENT_PERCEPTUAL, cmsFLAGS_NOCACHE);
+
+    cmsCloseProfile(src);
+    cmsCloseProfile(dst);
+
+    if (!xform) return profileName;
+
+    cmsDoTransform(xform, pixels, pixels, static_cast<cmsUInt32Number>(w) * h);
+    cmsDeleteTransform(xform);
+
+    return profileName;
 }
 
 // ─── Ham EXIF (TIFF-IFD) ayrıştırıcı ─────────────────────────────────────────
@@ -586,12 +629,34 @@ static bool DecodeWithWIC(const std::wstring& path, DecodeOutput& out)
         mqr->Release();
     }
 
-    // Format dönüştürücü: her WIC formatını 32bppPBGRA (pre-multiplied BGRA) yapar
+    // ICC renk profili çıkar (ICC transform sonradan manuel uygulanacak)
+    std::vector<BYTE> wicIccData;
+    {
+        IWICColorContext* colorCtx = nullptr;
+        UINT numCtx = 0;
+        if (SUCCEEDED(frame->GetColorContexts(1, &colorCtx, &numCtx)) && colorCtx && numCtx > 0)
+        {
+            WICColorContextType ctxType = WICColorContextUninitialized;
+            if (SUCCEEDED(colorCtx->GetType(&ctxType)) && ctxType == WICColorContextProfile)
+            {
+                UINT profileSize = 0;
+                colorCtx->GetProfileBytes(0, nullptr, &profileSize);
+                if (profileSize > 0)
+                {
+                    wicIccData.resize(profileSize);
+                    colorCtx->GetProfileBytes(profileSize, wicIccData.data(), &profileSize);
+                }
+            }
+            colorCtx->Release();
+        }
+    }
+
+    // Format dönüştürücü: 32bppBGRA (düz alfa) — ICC uygulandıktan sonra manuel premultiply
     IWICFormatConverter* converter = nullptr;
     hr = wic->CreateFormatConverter(&converter);
     if (FAILED(hr)) { frame->Release(); wic->Release(); return false; }
 
-    hr = converter->Initialize(frame, GUID_WICPixelFormat32bppPBGRA,
+    hr = converter->Initialize(frame, GUID_WICPixelFormat32bppBGRA,
                                WICBitmapDitherTypeNone, nullptr, 0.0f,
                                WICBitmapPaletteTypeMedianCut);
     frame->Release();
@@ -632,6 +697,16 @@ static bool DecodeWithWIC(const std::wstring& path, DecodeOutput& out)
     converter->Release();
     wic->Release();
 
+    if (!out.pixels.empty())
+    {
+        // ICC dönüşümü (varsa) → sRGB'ye çevir, sonra pre-multiply
+        if (!wicIccData.empty())
+            out.iccProfileName = ApplyIccProfile(
+                out.pixels.data(), out.width, out.height,
+                wicIccData.data(), wicIccData.size());
+        PremultiplyBGRA(out.pixels.data(), out.width, out.height);
+    }
+
     return !out.pixels.empty();
 }
 
@@ -641,6 +716,24 @@ static bool DecodeWebP(const std::wstring& path, DecodeOutput& out)
 {
     auto data = ReadFileBytes(path);
     if (data.empty()) return false;
+
+    // ICC profili çıkar (ICCP chunk — WebPDemux ile)
+    std::vector<uint8_t> webpIccData;
+    {
+        WebPData rawData = { data.data(), data.size() };
+        WebPDemuxer* dmx = WebPDemux(&rawData);
+        if (dmx)
+        {
+            WebPChunkIterator chunkIter;
+            if (WebPDemuxGetChunk(dmx, "ICCP", 1, &chunkIter))
+            {
+                webpIccData.assign(chunkIter.chunk.bytes,
+                                   chunkIter.chunk.bytes + chunkIter.chunk.size);
+                WebPDemuxReleaseChunkIterator(&chunkIter);
+            }
+            WebPDemuxDelete(dmx);
+        }
+    }
 
     // Frame sayısını hızlıca kontrol et
     WebPData webpData = { data.data(), data.size() };
@@ -669,6 +762,10 @@ static bool DecodeWebP(const std::wstring& path, DecodeOutput& out)
         out.height = static_cast<UINT>(h);
         out.pixels.assign(decoded, decoded + static_cast<size_t>(w) * h * 4);
         WebPFree(decoded);
+        if (!webpIccData.empty())
+            out.iccProfileName = ApplyIccProfile(
+                out.pixels.data(), out.width, out.height,
+                webpIccData.data(), webpIccData.size());
         PremultiplyBGRA(out.pixels.data(), out.width, out.height);
         return true;
     }
@@ -690,6 +787,12 @@ static bool DecodeWebP(const std::wstring& path, DecodeOutput& out)
 
         const size_t sz = static_cast<size_t>(info.canvas_width) * info.canvas_height * 4;
         frame.pixels.assign(buf, buf + sz);  // buf BGRA
+        if (!webpIccData.empty())
+        {
+            auto name = ApplyIccProfile(frame.pixels.data(), frame.width, frame.height,
+                                        webpIccData.data(), webpIccData.size());
+            if (out.iccProfileName.empty()) out.iccProfileName = std::move(name);
+        }
         PremultiplyBGRA(frame.pixels.data(), frame.width, frame.height);
         out.frames.push_back(std::move(frame));
     }
@@ -726,6 +829,21 @@ static bool DecodeHEIF(const std::wstring& path, DecodeOutput& out)
     {
         heif_context_free(ctx);
         return false;
+    }
+
+    // ICC profili çıkar
+    std::vector<uint8_t> heifIccData;
+    {
+        heif_color_profile_type cpType = heif_image_handle_get_color_profile_type(handle);
+        if (cpType == heif_color_profile_type_rICC || cpType == heif_color_profile_type_prof)
+        {
+            size_t sz = heif_image_handle_get_raw_color_profile_size(handle);
+            if (sz > 0)
+            {
+                heifIccData.resize(sz);
+                heif_image_handle_get_raw_color_profile(handle, heifIccData.data());
+            }
+        }
     }
 
     // EXIF bloğu varsa parse et
@@ -779,8 +897,12 @@ static bool DecodeHEIF(const std::wstring& path, DecodeOutput& out)
     heif_image_handle_release(handle);
     heif_context_free(ctx);
 
-    // libheif RGBA döner — Direct2D için BGRA'ya çevir, sonra pre-multiply
+    // libheif RGBA döner — BGRA'ya çevir, ICC uygula, sonra pre-multiply
     SwapRB(out.pixels.data(), out.width, out.height);
+    if (!heifIccData.empty())
+        out.iccProfileName = ApplyIccProfile(
+            out.pixels.data(), out.width, out.height,
+            heifIccData.data(), heifIccData.size());
     PremultiplyBGRA(out.pixels.data(), out.width, out.height);
     return true;
 }
@@ -796,7 +918,7 @@ static bool DecodeJXL(const std::wstring& path, DecodeOutput& out)
     if (!dec) return false;
 
     JxlDecoderSubscribeEvents(dec,
-        JXL_DEC_BASIC_INFO | JXL_DEC_FRAME | JXL_DEC_FULL_IMAGE);
+        JXL_DEC_BASIC_INFO | JXL_DEC_COLOR_ENCODING | JXL_DEC_FRAME | JXL_DEC_FULL_IMAGE);
     JxlDecoderSetInput(dec, data.data(), data.size());
     JxlDecoderCloseInput(dec);
 
@@ -807,6 +929,7 @@ static bool DecodeJXL(const std::wstring& path, DecodeOutput& out)
     bool success         = false;
     int  currentDurMs    = 100;
     std::vector<uint8_t> frameBuf;
+    std::vector<uint8_t> jxlIccData;
 
     for (;;)
     {
@@ -817,6 +940,18 @@ static bool DecodeJXL(const std::wstring& path, DecodeOutput& out)
             if (JxlDecoderGetBasicInfo(dec, &basicInfo) != JXL_DEC_SUCCESS) break;
             isAnimated = (basicInfo.have_animation == JXL_TRUE
                           && basicInfo.animation.tps_numerator > 0);
+        }
+        else if (status == JXL_DEC_COLOR_ENCODING)
+        {
+            size_t iccSize = 0;
+            if (JxlDecoderGetICCProfileSize(dec, JXL_COLOR_PROFILE_TARGET_DATA, &iccSize)
+                    == JXL_DEC_SUCCESS && iccSize > 0)
+            {
+                jxlIccData.resize(iccSize);
+                if (JxlDecoderGetColorAsICCProfile(dec, JXL_COLOR_PROFILE_TARGET_DATA,
+                        jxlIccData.data(), iccSize) != JXL_DEC_SUCCESS)
+                    jxlIccData.clear();
+            }
         }
         else if (status == JXL_DEC_FRAME)
         {
@@ -855,6 +990,12 @@ static bool DecodeJXL(const std::wstring& path, DecodeOutput& out)
                 frame.durationMs = currentDurMs;
                 frame.pixels     = frameBuf;  // copy — frameBuf reused for next frame
                 SwapRB(frame.pixels.data(), frame.width, frame.height);
+                if (!jxlIccData.empty())
+                {
+                    auto name = ApplyIccProfile(frame.pixels.data(), frame.width, frame.height,
+                                                jxlIccData.data(), jxlIccData.size());
+                    if (out.iccProfileName.empty()) out.iccProfileName = std::move(name);
+                }
                 PremultiplyBGRA(frame.pixels.data(), frame.width, frame.height);
                 out.frames.push_back(std::move(frame));
             }
@@ -889,8 +1030,12 @@ static bool DecodeJXL(const std::wstring& path, DecodeOutput& out)
 
     if (!isAnimated)
     {
-        // Statik JXL: RGBA → BGRA + pre-multiply
+        // Statik JXL: RGBA → BGRA, ICC uygula, pre-multiply
         SwapRB(out.pixels.data(), out.width, out.height);
+        if (!jxlIccData.empty())
+            out.iccProfileName = ApplyIccProfile(
+                out.pixels.data(), out.width, out.height,
+                jxlIccData.data(), jxlIccData.size());
         PremultiplyBGRA(out.pixels.data(), out.width, out.height);
     }
     return true;
@@ -938,9 +1083,15 @@ static bool DecodeAVIF(const std::wstring& path, DecodeOutput& out)
         return false;
     }
 
-    // EXIF: parse'dan sonra decoder->image'da mevcut
+    // EXIF + ICC: parse'dan sonra decoder->image'da mevcut
     if (decoder->image && decoder->image->exif.size > 0)
         ParseRawExif(decoder->image->exif.data, decoder->image->exif.size, out);
+
+    // ICC profili yakala
+    std::vector<uint8_t> avifIccData;
+    if (decoder->image && decoder->image->icc.size > 0)
+        avifIccData.assign(decoder->image->icc.data,
+                           decoder->image->icc.data + decoder->image->icc.size);
 
     if (decoder->imageCount > 1)
     {
@@ -955,6 +1106,12 @@ static bool DecodeAVIF(const std::wstring& path, DecodeOutput& out)
             if (durMs <= 0) durMs = 100;
             frame.durationMs = durMs;
 
+            if (!avifIccData.empty())
+            {
+                auto name = ApplyIccProfile(frame.pixels.data(), frame.width, frame.height,
+                                            avifIccData.data(), avifIccData.size());
+                if (out.iccProfileName.empty()) out.iccProfileName = std::move(name);
+            }
             PremultiplyBGRA(frame.pixels.data(), frame.width, frame.height);
             out.frames.push_back(std::move(frame));
         }
@@ -972,6 +1129,10 @@ static bool DecodeAVIF(const std::wstring& path, DecodeOutput& out)
         avifDecoderDestroy(decoder);
 
         if (!ok) { out.pixels.clear(); return false; }
+        if (!avifIccData.empty())
+            out.iccProfileName = ApplyIccProfile(
+                out.pixels.data(), out.width, out.height,
+                avifIccData.data(), avifIccData.size());
         PremultiplyBGRA(out.pixels.data(), out.width, out.height);
         return true;
     }

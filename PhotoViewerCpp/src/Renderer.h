@@ -58,6 +58,8 @@ struct ImageInfo
     double       gpsLonDecimal  = 0.0;
     // Nominatim konum adı — ör. L"Merzifon, Amasya, Türkiye"
     std::wstring gpsLocationName;
+    // ICC renk profili adı — ör. L"Adobe RGB (1998)"; yoksa boş
+    std::wstring iccProfileName;
     // Decode hatası — boş değilse ekranda gösterilir
     std::wstring errorMessage;
 };
