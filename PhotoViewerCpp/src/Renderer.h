@@ -23,7 +23,7 @@ namespace ArrowLayout {
 
 // Info panel boyutları — hem Renderer hem main.cpp tarafından kullanılır
 namespace PanelLayout {
-    constexpr float Width = 280.0f;  // panel genişliği
+    constexpr float Width = 320.0f;  // panel genişliği
     constexpr float PadX  = 16.0f;  // panel içi yatay dolgu
 }
 
@@ -148,9 +148,12 @@ private:
 
     // Fırçalar (cihaza bağlı, render target ile birlikte oluşturulur/yok edilir)
     ID2D1SolidColorBrush*  m_whiteBrush       = nullptr;   // Metin için
-    ID2D1SolidColorBrush*  m_overlayBrush     = nullptr;   // Yarı saydam siyah arka plan
+    ID2D1SolidColorBrush*  m_overlayBrush     = nullptr;   // Yarı saydam siyah arka plan (ok, index)
     ID2D1SolidColorBrush*  m_activeBrush      = nullptr;   // Info button aktif durumu
     ID2D1SolidColorBrush*  m_toggleFillBrush  = nullptr;   // Segmented toggle aktif segment dolgusu
+    ID2D1SolidColorBrush*  m_grayBrush        = nullptr;   // #AAAAAA — etiket metni
+    ID2D1SolidColorBrush*  m_panelBgBrush     = nullptr;   // #1A1A1A — panel arka planı
+    ID2D1SolidColorBrush*  m_separatorBrush   = nullptr;   // #333333 — section ayraçlar + panel kenar
 
     ID2D1Bitmap*           m_bitmap       = nullptr;   // GPU'ya yüklenmiş görüntü
     std::wstring           m_imagePath;                // D2DERR_RECREATE_TARGET'ta yeniden yüklemek için

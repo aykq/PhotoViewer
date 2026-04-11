@@ -312,7 +312,8 @@ static void ApplyZoom(HWND hwnd, float cx, float cy, float newZoom)
 
     RECT rc;
     GetClientRect(hwnd, &rc);
-    float halfW = (rc.right  - rc.left) * 0.5f;
+    float availW = (rc.right - rc.left) - g_viewState.panelAnimWidth;
+    float halfW = availW * 0.5f;
     float halfH = (rc.bottom - rc.top)  * 0.5f;
     float ratio = newZoom / g_viewState.zoomFactor;
 

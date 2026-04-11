@@ -120,6 +120,15 @@ HRESULT Renderer::CreateDeviceResources()
     m_renderTarget->CreateSolidColorBrush(
         D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.38f), &m_toggleFillBrush
     );
+    m_renderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(0.667f, 0.667f, 0.667f, 1.0f), &m_grayBrush      // #AAAAAA
+    );
+    m_renderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(0.102f, 0.102f, 0.102f, 1.0f), &m_panelBgBrush   // #1A1A1A
+    );
+    m_renderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(0.200f, 0.200f, 0.200f, 1.0f), &m_separatorBrush // #333333
+    );
     return S_OK;
 }
 
@@ -130,6 +139,9 @@ void Renderer::DiscardDeviceResources()
     m_animDurations.clear();
     m_animFrameIdx = 0;
     if (m_bitmap)           { m_bitmap->Release();           m_bitmap = nullptr; }
+    if (m_separatorBrush)   { m_separatorBrush->Release();   m_separatorBrush = nullptr; }
+    if (m_panelBgBrush)     { m_panelBgBrush->Release();     m_panelBgBrush = nullptr; }
+    if (m_grayBrush)        { m_grayBrush->Release();        m_grayBrush = nullptr; }
     if (m_toggleFillBrush)  { m_toggleFillBrush->Release();  m_toggleFillBrush = nullptr; }
     if (m_activeBrush)      { m_activeBrush->Release();      m_activeBrush = nullptr; }
     if (m_whiteBrush)       { m_whiteBrush->Release();       m_whiteBrush = nullptr; }
@@ -238,31 +250,30 @@ void Renderer::DrawNavArrows(const ViewState& vs)
 
     D2D1_SIZE_F sz = m_renderTarget->GetSize();
     float availW = sz.width - vs.panelAnimWidth;
-    float midY  = sz.height * 0.5f;
-    float halfH = ArrowLayout::PillH * 0.5f;
+    float midY   = sz.height * 0.5f;
 
-    // Sol ok pill — sol köşeler pencere dışında kalır; yalnızca sağ köşeler yuvarlak görünür
+    // Floating rounded square oklar — 40×40px, 10px köşe, kenardan 8px boşluk
+    constexpr float kSqSize   = 40.0f;
+    constexpr float kSqRadius = 10.0f;
+    constexpr float kSqMargin = 8.0f;
+
+    // Sol ok
     D2D1_ROUNDED_RECT leftRR = {
-        D2D1::RectF(-ArrowLayout::Radius, midY - halfH,
-                     ArrowLayout::ZoneW,  midY + halfH),
-        ArrowLayout::Radius, ArrowLayout::Radius
+        D2D1::RectF(kSqMargin,            midY - kSqSize * 0.5f,
+                    kSqMargin + kSqSize,   midY + kSqSize * 0.5f),
+        kSqRadius, kSqRadius
     };
     m_renderTarget->FillRoundedRectangle(leftRR, m_overlayBrush);
+    m_renderTarget->DrawText(L"\u2039", 1, m_textFormat, leftRR.rect, m_whiteBrush);
 
-    D2D1_RECT_F leftText = D2D1::RectF(0, midY - halfH, ArrowLayout::ZoneW, midY + halfH);
-    m_renderTarget->DrawText(L"\u2039", 1, m_textFormat, leftText, m_whiteBrush);
-
-    // Sağ ok pill — kalan alanın sağ kenarına yapışık; yalnızca sol köşeler yuvarlak görünür
+    // Sağ ok
     D2D1_ROUNDED_RECT rightRR = {
-        D2D1::RectF(availW - ArrowLayout::ZoneW, midY - halfH,
-                    availW + ArrowLayout::Radius, midY + halfH),
-        ArrowLayout::Radius, ArrowLayout::Radius
+        D2D1::RectF(availW - kSqMargin - kSqSize, midY - kSqSize * 0.5f,
+                    availW - kSqMargin,            midY + kSqSize * 0.5f),
+        kSqRadius, kSqRadius
     };
     m_renderTarget->FillRoundedRectangle(rightRR, m_overlayBrush);
-
-    D2D1_RECT_F rightText = D2D1::RectF(
-        availW - ArrowLayout::ZoneW, midY - halfH, availW, midY + halfH);
-    m_renderTarget->DrawText(L"\u203A", 1, m_textFormat, rightText, m_whiteBrush);
+    m_renderTarget->DrawText(L"\u203A", 1, m_textFormat, rightRR.rect, m_whiteBrush);
 }
 
 // ─── Index Bar ────────────────────────────────────────────────────────────────
@@ -326,13 +337,20 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
 {
     m_dateToggleVisible = false;
     m_gpsLinkVisible    = false;
-    if (!m_overlayBrush || !m_whiteBrush) return;
+    if (!m_panelBgBrush || !m_whiteBrush) return;
 
     D2D1_SIZE_F sz = m_renderTarget->GetSize();
 
-    // Panel arka planı — sağ kenara yapışık, animasyonlu genişlik
+    // Panel arka planı — opak koyu (#1A1A1A), sağ kenara yapışık
     D2D1_RECT_F bg = D2D1::RectF(sz.width - vs.panelAnimWidth, 0.0f, sz.width, sz.height);
-    m_renderTarget->FillRectangle(bg, m_overlayBrush);
+    m_renderTarget->FillRectangle(bg, m_panelBgBrush);
+
+    // Sol kenar çizgisi (#333333, 1px)
+    m_renderTarget->DrawLine(
+        D2D1::Point2F(sz.width - vs.panelAnimWidth, 0.0f),
+        D2D1::Point2F(sz.width - vs.panelAnimWidth, sz.height),
+        m_separatorBrush, 1.0f
+    );
 
     // Animasyon sırasında metin taşmasını önlemek için clip bölgesi
     m_renderTarget->PushAxisAlignedClip(bg, D2D1_ANTIALIAS_MODE_ALIASED);
@@ -348,7 +366,26 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
     // panel daralırken metin yeniden kırılmaz.
     float x0 = sz.width - PanelLayout::Width + PanelLayout::PadX;
     float x1 = sz.width - PanelLayout::PadX;
-    float y  = PanelLayout::PadX;
+
+    // ── "Image Details" başlık bölümü ───────────────────────────────────────
+    constexpr float kHeaderH   = 48.0f;
+    constexpr float kHeaderTxt = 13.0f;  // m_valueFormat font boyutu
+    float headerTxtY = (kHeaderH - kHeaderTxt) * 0.5f;
+    m_renderTarget->DrawText(
+        L"Image Details",
+        static_cast<UINT32>(wcslen(L"Image Details")),
+        m_valueFormat,
+        D2D1::RectF(x0, headerTxtY, x1, headerTxtY + kHeaderTxt + 4.0f),
+        m_whiteBrush
+    );
+    // Başlık altı ayraç
+    m_renderTarget->DrawLine(
+        D2D1::Point2F(sz.width - PanelLayout::Width, kHeaderH),
+        D2D1::Point2F(sz.width, kHeaderH),
+        m_separatorBrush, 1.0f
+    );
+
+    float y = kHeaderH + PanelLayout::PadX;
 
     constexpr float kLabelH = 17.0f;
     constexpr float kGap    = 4.0f;
@@ -359,11 +396,13 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
     auto DrawRow = [&](const wchar_t* label, const std::wstring& value)
     {
         if (value.empty()) return;
+        // Etiket: gri (#AAAAAA)
         m_renderTarget->DrawText(
             label, static_cast<UINT32>(wcslen(label)),
             m_labelFormat, D2D1::RectF(x0, y, x1, y + kLabelH),
-            m_whiteBrush
+            m_grayBrush
         );
+        // Değer: beyaz
         m_renderTarget->DrawText(
             value.c_str(), static_cast<UINT32>(value.size()),
             m_valueFormat, D2D1::RectF(x0, y + kLabelH + kGap, x1, y + kLabelH + kGap + kValueH),
@@ -395,11 +434,11 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
         }
     }
 
-    // İnce ayraç
+    // Dosya adı altı ayraç
     m_renderTarget->DrawLine(
-        D2D1::Point2F(x0, y), D2D1::Point2F(x1, y), m_whiteBrush, 0.5f
+        D2D1::Point2F(x0, y), D2D1::Point2F(x1, y), m_separatorBrush, 1.0f
     );
-    y += 10.0f;
+    y += 12.0f;
 
     // Temel bilgiler
     if (info->width > 0 && info->height > 0)
@@ -431,9 +470,9 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
     {
         y += 4.0f;
         m_renderTarget->DrawLine(
-            D2D1::Point2F(x0, y), D2D1::Point2F(x1, y), m_whiteBrush, 0.5f
+            D2D1::Point2F(x0, y), D2D1::Point2F(x1, y), m_separatorBrush, 1.0f
         );
-        y += 10.0f;
+        y += 12.0f;
 
         // Date Taken — etiket (+ inline toggle) + değer
         if (!info->dateTaken.empty())
@@ -448,10 +487,10 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
             const float py = y + (kLabelH - kPillH) * 0.5f;
             const bool  leftActive = !vs.use12HourTime;
 
-            // Etiket — pill'in soluna kadar
+            // Etiket — pill'in soluna kadar (gri)
             m_renderTarget->DrawText(
                 L"Date Taken", static_cast<UINT32>(wcslen(L"Date Taken")),
-                m_labelFormat, D2D1::RectF(x0, y, px - 6.0f, y + kLabelH), m_whiteBrush
+                m_labelFormat, D2D1::RectF(x0, y, px - 6.0f, y + kLabelH), m_grayBrush
             );
 
             // Aktif segment dolgusu
@@ -524,16 +563,16 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
         {
             y += 4.0f;
             m_renderTarget->DrawLine(
-                D2D1::Point2F(x0, y), D2D1::Point2F(x1, y), m_whiteBrush, 0.5f
+                D2D1::Point2F(x0, y), D2D1::Point2F(x1, y), m_separatorBrush, 1.0f
             );
-            y += 10.0f;
+            y += 12.0f;
 
             bool bothCoords = !info->gpsLatitude.empty() && !info->gpsLongitude.empty();
             std::wstring coords = bothCoords
                 ? (info->gpsLatitude + L"  " + info->gpsLongitude)
                 : (info->gpsLatitude.empty() ? info->gpsLongitude : info->gpsLatitude);
 
-            // GPS Location etiket satırı — harita varsa küçük "↗" hint'i ekle
+            // GPS Location etiket satırı — harita varsa küçük "↗" hint'i ekle (gri)
             {
                 std::wstring label = info->hasGpsDecimal
                     ? L"GPS Location \u2197"   // ↗ = tıklanabilir olduğunu gösterir
@@ -541,7 +580,7 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
                 m_renderTarget->DrawText(
                     label.c_str(), static_cast<UINT32>(label.size()),
                     m_labelFormat, D2D1::RectF(x0, y, x1, y + kLabelH),
-                    m_whiteBrush
+                    m_grayBrush
                 );
             }
 
@@ -602,11 +641,14 @@ void Renderer::DrawInfoButton(const ViewState& vs)
     float y1 = kMargin + kSize;
 
     D2D1_RECT_F rect = D2D1::RectF(x0, y0, x1, y1);
-    D2D1_ROUNDED_RECT rr = { rect, 6.0f, 6.0f };
+    D2D1_ROUNDED_RECT rr = { rect, 8.0f, 8.0f };
 
-    // Active (panel open): white-tinted fill; inactive: standard dark overlay
-    auto* fillBrush = vs.showInfoPanel ? m_activeBrush : m_overlayBrush;
+    // Active (panel open): beyaz tint dolgu; inactive: panel arka planıyla aynı koyu
+    auto* fillBrush = vs.showInfoPanel ? m_activeBrush : m_panelBgBrush;
     m_renderTarget->FillRoundedRectangle(rr, fillBrush);
+
+    // Kenar çizgisi
+    m_renderTarget->DrawRoundedRectangle(rr, m_separatorBrush, 1.0f);
 
     // "i" glyph centered in the button
     m_renderTarget->DrawText(L"i", 1, m_textFormat, rect, m_whiteBrush);
@@ -626,8 +668,8 @@ void Renderer::Render(const ViewState& vs, const ImageInfo* info)
 
     m_renderTarget->BeginDraw();
 
-    // Arka plan: koyu gri (#1E1E1E)
-    m_renderTarget->Clear(D2D1::ColorF(0.118f, 0.118f, 0.118f));
+    // Arka plan: çok koyu (#0F0F0F)
+    m_renderTarget->Clear(D2D1::ColorF(0.059f, 0.059f, 0.059f));
 
     // Aktif bitmap: animasyonsa mevcut frame, değilse statik bitmap
     ID2D1Bitmap* activeBitmap = nullptr;
@@ -687,10 +729,11 @@ void Renderer::Render(const ViewState& vs, const ImageInfo* info)
         constexpr float kH      = 34.0f;
         constexpr float kMargin = 12.0f;
 
+        float rightEdge = wndSize.width - vs.panelAnimWidth;
         D2D1_RECT_F bgRect = D2D1::RectF(
-            wndSize.width  - kW - kMargin,
+            rightEdge - kW - kMargin,
             wndSize.height - kH - kMargin,
-            wndSize.width  - kMargin,
+            rightEdge - kMargin,
             wndSize.height - kMargin
         );
 

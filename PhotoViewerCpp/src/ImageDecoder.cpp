@@ -18,7 +18,10 @@
 
 #pragma comment(lib, "libwebpdemux.lib")
 
+#pragma warning(push)
+#pragma warning(disable: 5033)  // lcms2: 'register' C++17'de kaldırıldı
 #include <lcms2.h>
+#pragma warning(pop)
 #pragma comment(lib, "lcms2.lib")
 
 // ─── Dosya okuma yardımcısı ───────────────────────────────────────────────────
@@ -278,7 +281,7 @@ static std::wstring ApplyIccProfile(uint8_t* pixels, UINT w, UINT h,
     cmsHTRANSFORM xform = cmsCreateTransform(
         src, TYPE_BGRA_8,
         dst, TYPE_BGRA_8,
-        INTENT_PERCEPTUAL, cmsFLAGS_NOCACHE);
+        INTENT_PERCEPTUAL, 0);
 
     cmsCloseProfile(src);
     cmsCloseProfile(dst);
@@ -631,20 +634,38 @@ static bool DecodeWithWIC(const std::wstring& path, DecodeOutput& out)
 
     // ICC renk profili çıkar (ICC transform sonradan manuel uygulanacak)
     std::vector<BYTE> wicIccData;
+    std::wstring       wicExifColorSpaceName;  // gömülü ICC yoksa EXIF renk alanı adı
     {
         IWICColorContext* colorCtx = nullptr;
         UINT numCtx = 0;
         if (SUCCEEDED(frame->GetColorContexts(1, &colorCtx, &numCtx)) && colorCtx && numCtx > 0)
         {
             WICColorContextType ctxType = WICColorContextUninitialized;
-            if (SUCCEEDED(colorCtx->GetType(&ctxType)) && ctxType == WICColorContextProfile)
+            if (SUCCEEDED(colorCtx->GetType(&ctxType)))
             {
-                UINT profileSize = 0;
-                colorCtx->GetProfileBytes(0, nullptr, &profileSize);
-                if (profileSize > 0)
+                if (ctxType == WICColorContextProfile)
                 {
-                    wicIccData.resize(profileSize);
-                    colorCtx->GetProfileBytes(profileSize, wicIccData.data(), &profileSize);
+                    // Gömülü ICC profili: ham baytları al, lcms2 ile sRGB'ye dönüştür
+                    UINT profileSize = 0;
+                    colorCtx->GetProfileBytes(0, nullptr, &profileSize);
+                    if (profileSize > 0)
+                    {
+                        wicIccData.resize(profileSize);
+                        colorCtx->GetProfileBytes(profileSize, wicIccData.data(), &profileSize);
+                    }
+                }
+                else if (ctxType == WICColorContextExifColorSpace)
+                {
+                    // EXIF ColorSpace tag ile işaretlenmiş; gömülü ICC yok.
+                    // Değer 1 = sRGB, 65535 = Uncalibrated (genellikle Adobe RGB)
+                    UINT exifCS = 0;
+                    if (SUCCEEDED(colorCtx->GetExifColorSpace(&exifCS)))
+                    {
+                        if (exifCS == 1)
+                            wicExifColorSpaceName = L"sRGB";
+                        else if (exifCS == 65535)
+                            wicExifColorSpaceName = L"Uncalibrated";
+                    }
                 }
             }
             colorCtx->Release();
@@ -704,6 +725,8 @@ static bool DecodeWithWIC(const std::wstring& path, DecodeOutput& out)
             out.iccProfileName = ApplyIccProfile(
                 out.pixels.data(), out.width, out.height,
                 wicIccData.data(), wicIccData.size());
+        else if (!wicExifColorSpaceName.empty())
+            out.iccProfileName = wicExifColorSpaceName;  // EXIF tag'den gelen isim; piksel dönüşümü yok
         PremultiplyBGRA(out.pixels.data(), out.width, out.height);
     }
 
