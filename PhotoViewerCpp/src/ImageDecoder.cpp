@@ -296,14 +296,32 @@ static std::wstring ApplyIccProfile(uint8_t* pixels, UINT w, UINT h,
 
 // ─── Ham EXIF (TIFF-IFD) ayrıştırıcı ─────────────────────────────────────────
 // HEIC ve AVIF dosyalarından elde edilen ham EXIF byte dizisini ayrıştırır.
-// Baş kısmındaki "Exif\0\0" ön eki varsa atlanır.
+// Baş kısmındaki "Exif\0\0" veya HEIC 4-byte ISO offset ön eki varsa atlanır.
 static void ParseRawExif(const uint8_t* data, size_t size, DecodeOutput& out)
 {
-    // "Exif\0\0" ön ekini atla
+    // "Exif\0\0" ön ekini atla (JPEG APP1 payload formatı)
     if (size >= 6 && memcmp(data, "Exif\0\0", 6) == 0)
     {
         data += 6;
         size -= 6;
+    }
+    // HEIC/libheif EXIF item formatı (ISO 14496-12 ExifDataBlock):
+    // İlk 4 byte big-endian uint32 = 4-byte alanının hemen ardından TIFF header'a olan offset.
+    // Örn. iPhone HEIC: offset=6 → 4 byte + "Exif\0\0" (6 byte) + TIFF verisi.
+    else if (size >= 4)
+    {
+        uint32_t off4 = (uint32_t(data[0]) << 24) | (uint32_t(data[1]) << 16) |
+                        (uint32_t(data[2]) << 8)  |  uint32_t(data[3]);
+        size_t tiffStart = static_cast<size_t>(4) + off4;
+        if (tiffStart + 4 <= size)
+        {
+            const uint8_t* t = data + tiffStart;
+            if ((t[0] == 'I' && t[1] == 'I') || (t[0] == 'M' && t[1] == 'M'))
+            {
+                data  = t;
+                size -= tiffStart;
+            }
+        }
     }
     if (size < 8) return;
 
@@ -869,7 +887,7 @@ static bool DecodeHEIF(const std::wstring& path, DecodeOutput& out)
         }
     }
 
-    // EXIF bloğu varsa parse et
+    // EXIF bloğu varsa parse et (libheif 4-byte ISO offset header dahil döner; ParseRawExif halleder)
     {
         int nMeta = heif_image_handle_get_number_of_metadata_blocks(handle, "Exif");
         if (nMeta > 0)

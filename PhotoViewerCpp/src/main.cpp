@@ -607,6 +607,7 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
     UpdateWindowTitle(hwnd, path);
     ++g_thumbCancel;  // Eski thumbnail decode thread'lerini iptal et
     ++g_tileCancel;   // Eski tile fetch thread'lerini iptal et
+    if (g_renderer) g_renderer->ClearMapTiles();  // Önceki görüntünün tile'larını temizle
 
     bool  keepPanel      = g_viewState.showInfoPanel;
     float keepAnimWidth  = g_viewState.panelAnimWidth;
@@ -656,6 +657,9 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
             TriggerPrefetch();
             UpdateStripSlots();
             TriggerThumbFetches(hwnd);
+            // GPS varsa OSM tile'larını arka planda çek (cache hit yolunda da gerekli)
+            if (g_imageInfo.hasGpsDecimal)
+                StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
             return;
         }
     }

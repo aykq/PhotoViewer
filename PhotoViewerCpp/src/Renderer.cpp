@@ -361,7 +361,6 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
     m_gpsLinkVisible     = false;
     m_mapPreviewVisible  = false;
     m_mapCopyBtnVisible  = false;
-    m_mapToggleVisible   = false;
     if (!m_panelBgBrush || !m_whiteBrush) return;
 
     D2D1_SIZE_F sz = m_renderTarget->GetSize();
