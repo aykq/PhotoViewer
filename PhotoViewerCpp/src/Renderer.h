@@ -25,8 +25,9 @@ namespace ArrowLayout {
 
 // Info panel boyutları — hem Renderer hem main.cpp tarafından kullanılır
 namespace PanelLayout {
-    constexpr float Width = 320.0f;  // panel genişliği
-    constexpr float PadX  = 16.0f;  // panel içi yatay dolgu
+    constexpr float Width   = 320.0f;  // panel genişliği
+    constexpr float PadX    = 16.0f;   // panel içi yatay dolgu
+    constexpr float HeaderH = 48.0f;   // "Image Details" başlık yüksekliği (sabit, scrolllanmaz)
 }
 
 // Info button boyutları — hem Renderer hem main.cpp tarafından kullanılır
@@ -34,6 +35,21 @@ namespace InfoButton {
     constexpr float Size   = 32.0f;  // buton genişlik/yükseklik
     constexpr float Margin = 12.0f;  // pencere kenarından mesafe
 }
+
+// OSM harita tile anahtarı — tile cache map key'i olarak kullanılır
+struct MapTileKey
+{
+    int zoom = 0;
+    int x    = 0;
+    int y    = 0;
+
+    bool operator<(const MapTileKey& o) const
+    {
+        if (zoom != o.zoom) return zoom < o.zoom;
+        if (x    != o.x)   return x    < o.x;
+        return y < o.y;
+    }
+};
 
 // Thumbnail strip boyutları — hem Renderer hem main.cpp tarafından kullanılır
 namespace StripLayout {
@@ -102,6 +118,7 @@ struct ViewState
     float zoomIndicatorAlpha   = 0.0f;   // Zoom göstergesi opaklığı — alpha>0 ise çizilir
     bool  leftArrowPressed     = false;  // Sol ok basılı (press highlight)
     bool  rightArrowPressed    = false;  // Sağ ok basılı (press highlight)
+    float panelScrollY         = 0.0f;  // Info paneli scroll ofseti (piksel, 0 = üst)
 };
 
 // Renderer: Direct2D render target yönetimi + WIC görüntü yükleme
@@ -138,6 +155,30 @@ public:
     D2D1_RECT_F GetGpsLinkRect()    const { return m_gpsLinkRect; }
     bool        IsGpsLinkVisible()  const { return m_gpsLinkVisible; }
 
+    // Ham BGRA pre-mul piksellerden tile yükle — WM_TILE_DONE'da kullanılır (hızlı yol).
+    // w×h: tile boyutu (genellikle 256×256); stride = w*4 kabul edilir.
+    void UploadMapTileRaw(int zoom, int x, int y,
+                          const uint8_t* bgra, UINT w, UINT h);
+
+    // Harita önizleme rect — DrawInfoPanel her çizimde günceller;
+    // WndProc WM_LBUTTONUP'ta tıklama kontrolü için kullanılır.
+    D2D1_RECT_F GetMapPreviewRect()    const { return m_mapPreviewRect; }
+    bool        IsMapPreviewVisible()  const { return m_mapPreviewVisible; }
+
+    // Kopyala butonu rect — harita sağ üst köşesi 28×28px.
+    D2D1_RECT_F GetMapCopyBtnRect()    const { return m_mapCopyBtnRect; }
+    bool        IsMapCopyBtnVisible()  const { return m_mapCopyBtnVisible; }
+
+    // Koordinat kopyalandı bildirimi — 1.5s yeşil tik gösterimi başlatır.
+    void MarkCoordsCopied() { m_mapCopiedAt = GetTickCount64(); }
+
+    // Tile cache'ini temizle — yeniden çekme için.
+    void ClearMapTiles()
+    {
+        for (auto& [key, bmp] : m_mapTileCache) if (bmp) bmp->Release();
+        m_mapTileCache.clear();
+    }
+
     // Animasyon — WM_DECODE_DONE'dan sonra çağrılır
     void LoadAnimationFrames(const std::vector<AnimFrame>& frames);
     void ClearAnimation();
@@ -172,6 +213,8 @@ private:
     void DrawInfoButton(const ViewState& vs);
     void DrawThumbnailStrip(const ViewState& vs);
     void DrawStripToggle(const ViewState& vs);
+    // Harita önizleme çizimi — DrawInfoPanel içinden çağrılır
+    void DrawMapPreview(float x0, float x1, float y, const ViewState& vs, const ImageInfo* info);
 
     HWND                   m_hwnd         = nullptr;
     ID2D1Factory*          m_factory      = nullptr;   // Direct2D fabrikası (cihazdan bağımsız)
@@ -222,4 +265,25 @@ private:
     D2D1_RECT_F              m_stripToggleRect    = {};
     bool                     m_stripToggleVisible = false;
     std::vector<D2D1_RECT_F> m_thumbRects;   // m_stripPaths ile 1:1 hizalı
+
+    // OSM harita tile cache (cihaza bağlı) — UploadMapTileRaw ile doldurulur
+    std::map<MapTileKey, ID2D1Bitmap*> m_mapTileCache;
+
+    // Harita önizleme alanı — DrawMapPreview tarafından doldurulur
+    D2D1_RECT_F m_mapPreviewRect    = {};
+    bool        m_mapPreviewVisible = false;
+
+    // Kopyala butonu alanı — DrawMapPreview tarafından doldurulur
+    D2D1_RECT_F m_mapCopyBtnRect    = {};
+    bool        m_mapCopyBtnVisible = false;
+
+    // Koordinat kopyalama geri bildirimi — MarkCoordsCopied() ayarlar; 0 = pasif
+    ULONGLONG   m_mapCopiedAt = 0;
+
+    // Info paneli içerik yüksekliği — DrawInfoPanel her çizimde hesaplar
+    float       m_infoPanelContentH = 0.0f;
+
+public:
+    // Kaydırma sınırlaması için maksimum scroll hesabında kullanılır
+    float GetInfoPanelContentHeight() const { return m_infoPanelContentH; }
 };

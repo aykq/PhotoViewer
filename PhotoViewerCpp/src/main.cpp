@@ -18,6 +18,7 @@
 // --- Sabitler ---
 
 static constexpr UINT     WM_DECODE_DONE        = WM_APP + 1;
+static constexpr UINT     WM_TILE_DONE          = WM_APP + 2;
 static constexpr UINT     WM_THUMB_DONE         = WM_APP + 3;
 static constexpr UINT_PTR kZoomIndicatorTimerID = 1;
 static constexpr UINT_PTR kPanelAnimTimerID     = 2;
@@ -27,6 +28,7 @@ static constexpr UINT_PTR kStripAnimTimerID     = 5;
 static constexpr UINT_PTR kIndexIdleTimerID     = 6;  // 1.5s hareketsizlik → index fade başlar
 static constexpr UINT_PTR kIndexFadeTimerID     = 7;  // index bar alpha animasyonu
 static constexpr UINT_PTR kZoomFadeTimerID      = 8;  // zoom indicator alpha animasyonu
+static constexpr UINT_PTR kCopyFeedbackTimerID  = 9;  // 1.5s kopyala feedback sıfırlama
 
 // Animasyon timer aralığı — 7ms ≈ 143fps (timeBeginPeriod(1) ile hassas çalışır)
 static constexpr UINT     kAnimIntervalMs       = 7;
@@ -71,6 +73,9 @@ static std::atomic<uint64_t>                           g_prefetchCancel{0};
 
 // --- Thumbnail decode cancel ---
 static std::atomic<uint64_t>                           g_thumbCancel{0};
+
+// --- Tile fetch cancel ---
+static std::atomic<uint64_t>                           g_tileCancel{0};
 
 // --- Decode yardımcıları ---
 
@@ -225,6 +230,7 @@ static ImageInfo        g_imageInfo;
 
 struct SavedWindowRect { int x, y, w, h; bool valid; };
 static SavedWindowRect  g_savedWindowRect = {};
+
 
 // Pan sürükleme durumu
 static bool  g_dragging        = false;
@@ -495,6 +501,71 @@ static void StartThumbDecode(HWND hwnd, const std::wstring& path, uint64_t cance
     }).detach();
 }
 
+// --- Tile fetch yardımcıları ---
+
+struct TileFetchResult
+{
+    int                  zoom        = 0;
+    int                  x           = 0;
+    int                  y           = 0;
+    std::vector<uint8_t> pixels;     // BGRA pre-mul — PNG decode background thread'de yapılır
+    UINT                 width       = 0;
+    UINT                 height      = 0;
+    uint64_t             cancelToken = 0;
+};
+
+// 3×2 tile grid'i (zoom 14) için 6 paralel fetch thread başlatır.
+// Her thread kendi token kontrolünü yapar; geçersizse veriyi atmaz.
+static void StartTileFetches(HWND hwnd, double lat, double lon)
+{
+    ++g_tileCancel;
+    const uint64_t token = g_tileCancel.load();
+
+    constexpr int kZoom = 14;
+    int cx, cy;
+    LatLonToTileXY(lat, lon, kZoom, cx, cy);
+
+    for (int row = 0; row < 2; ++row)
+    {
+        for (int col = 0; col < 3; ++col)
+        {
+            const int tx = cx - 1 + col;
+            const int ty = cy - 1 + row;
+
+            std::thread([hwnd, tx, ty, token]()
+            {
+                if (g_tileCancel.load() != token) return;
+
+                CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+                // PNG indir
+                std::vector<uint8_t> png = FetchOsmTile(kZoom, tx, ty);
+
+                // PNG'yi BGRA piksellerine decode et — UI thread yerine burada yapılır
+                std::vector<uint8_t> pixels;
+                UINT w = 0, h = 0;
+                if (!png.empty())
+                    DecodePngToPixels(png.data(), png.size(), pixels, w, h);
+
+                CoUninitialize();
+
+                if (g_tileCancel.load() != token || pixels.empty()) return;
+
+                auto* result        = new TileFetchResult();
+                result->zoom        = kZoom;
+                result->x           = tx;
+                result->y           = ty;
+                result->pixels      = std::move(pixels);
+                result->width       = w;
+                result->height      = h;
+                result->cancelToken = token;
+
+                PostMessage(hwnd, WM_TILE_DONE, 0, reinterpret_cast<LPARAM>(result));
+            }).detach();
+        }
+    }
+}
+
 // Strip slot'larını navigator'a göre renderer'a yükler
 static void UpdateStripSlots()
 {
@@ -535,6 +606,7 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
     if (g_renderer) g_renderer->ClearAnimation();
     UpdateWindowTitle(hwnd, path);
     ++g_thumbCancel;  // Eski thumbnail decode thread'lerini iptal et
+    ++g_tileCancel;   // Eski tile fetch thread'lerini iptal et
 
     bool  keepPanel      = g_viewState.showInfoPanel;
     float keepAnimWidth  = g_viewState.panelAnimWidth;
@@ -615,7 +687,7 @@ static void ApplyZoom(HWND hwnd, float cx, float cy, float newZoom)
     GetClientRect(hwnd, &rc);
     float availW = (rc.right - rc.left) - g_viewState.panelAnimWidth;
     float halfW = availW * 0.5f;
-    float halfH = (rc.bottom - rc.top)  * 0.5f;
+    float halfH = ((rc.bottom - rc.top) - g_viewState.stripAnimHeight) * 0.5f;
 
     // Hedef pozisyonu temel al — hızlı scroll'da doğru birikim için
     float ratio = newZoom / g_viewState.zoomTarget;
@@ -671,12 +743,33 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float cx = static_cast<float>(cursor.x);
         float cy = static_cast<float>(cursor.y);
 
-        // Filmstrip üzerindeyse scroll → navigasyon
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        float wndW = static_cast<float>(rc.right);
+        float wndH = static_cast<float>(rc.bottom);
+
+        // Info panel üzerindeyse → panel içeriğini kaydır (zoom/navigasyon değil)
+        if (g_viewState.panelAnimWidth > 0.0f &&
+            cx >= wndW - g_viewState.panelAnimWidth)
+        {
+            constexpr float kScrollStep = 40.0f;
+            g_viewState.panelScrollY += (delta > 0 ? -kScrollStep : kScrollStep);
+            // Sınırla: 0 ≤ scrollY ≤ (içerik yüksekliği − görünür alan)
+            float maxScroll = 0.0f;
+            if (g_renderer)
+            {
+                float visibleH = wndH - PanelLayout::HeaderH - g_viewState.stripAnimHeight;
+                maxScroll = max(0.0f, g_renderer->GetInfoPanelContentHeight() - visibleH);
+            }
+            g_viewState.panelScrollY = max(0.0f, min(maxScroll, g_viewState.panelScrollY));
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        // Filmstrip üzerindeyse scroll → navigasyon (panel alanı zaten yukarıda döndü)
         if (g_viewState.stripAnimHeight > 0.0f && g_navigator && !g_navigator->empty())
         {
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            if (cy >= static_cast<float>(rc.bottom) - g_viewState.stripAnimHeight)
+            if (cy >= wndH - g_viewState.stripAnimHeight)
             {
                 if (delta > 0)
                     NavigateTo(hwnd, g_navigator->prev());
@@ -774,9 +867,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_MOUSEMOVE:
     {
+        float mx = static_cast<float>(GET_X_LPARAM(lParam));
+        float my = static_cast<float>(GET_Y_LPARAM(lParam));
+
         if (!g_dragging) return 0;
-        g_viewState.panX = g_panAtDragStartX + (static_cast<float>(GET_X_LPARAM(lParam)) - g_dragStartX);
-        g_viewState.panY = g_panAtDragStartY + (static_cast<float>(GET_Y_LPARAM(lParam)) - g_dragStartY);
+        float nx = g_panAtDragStartX + (mx - g_dragStartX);
+        float ny = g_panAtDragStartY + (my - g_dragStartY);
+        g_viewState.panX = g_viewState.panXTarget = nx;
+        g_viewState.panY = g_viewState.panYTarget = ny;
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
@@ -862,7 +960,49 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     {
                         wchar_t url[256];
                         swprintf_s(url,
-                            L"https://www.openstreetmap.org/?mlat=%.6f&mlon=%.6f&zoom=15",
+                            L"https://maps.google.com/?q=%.6f,%.6f",
+                            g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                        ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+                        return 0;
+                    }
+                }
+                // Kopyala butonu — koordinatları panoya kopyala
+                if (g_renderer->IsMapCopyBtnVisible() && g_imageInfo.hasGpsDecimal)
+                {
+                    D2D1_RECT_F r = g_renderer->GetMapCopyBtnRect();
+                    if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
+                    {
+                        wchar_t coordStr[64];
+                        swprintf_s(coordStr, L"%.6f, %.6f",
+                                   g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                        if (OpenClipboard(hwnd))
+                        {
+                            EmptyClipboard();
+                            const size_t bytes = (wcslen(coordStr) + 1) * sizeof(wchar_t);
+                            HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+                            if (hMem)
+                            {
+                                memcpy(GlobalLock(hMem), coordStr, bytes);
+                                GlobalUnlock(hMem);
+                                SetClipboardData(CF_UNICODETEXT, hMem);
+                            }
+                            CloseClipboard();
+                        }
+                        g_renderer->MarkCoordsCopied();
+                        SetTimer(hwnd, kCopyFeedbackTimerID, 1500, nullptr);
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                }
+                // Harita önizleme tıklaması — OSM haritasını tarayıcıda aç
+                if (g_renderer->IsMapPreviewVisible() && g_imageInfo.hasGpsDecimal)
+                {
+                    D2D1_RECT_F r = g_renderer->GetMapPreviewRect();
+                    if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
+                    {
+                        wchar_t url[256];
+                        swprintf_s(url,
+                            L"https://maps.google.com/?q=%.6f,%.6f",
                             g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
                         ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
                         return 0;
@@ -992,6 +1132,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
         case VK_ESCAPE:
             DestroyWindow(hwnd);
+            break;
+
+        case 'W':
+            if (GetKeyState(VK_CONTROL) & 0x8000)
+                DestroyWindow(hwnd);
             break;
 
         case 'I':
@@ -1164,6 +1309,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
             InvalidateRect(hwnd, nullptr, FALSE);
         }
+        else if (wParam == kCopyFeedbackTimerID)
+        {
+            KillTimer(hwnd, kCopyFeedbackTimerID);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
         return 0;
 
     case WM_DECODE_DONE:
@@ -1178,6 +1328,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             // Strip slot'larını güncelle (ilk açılışta NavigateTo çağrılmaz, burada yapılır)
             UpdateStripSlots();
             TriggerThumbFetches(hwnd);
+            // GPS varsa OSM tile'larını arka planda çek
+            if (g_imageInfo.hasGpsDecimal)
+                StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
         }
 
         delete result;
@@ -1200,11 +1353,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
 
+    case WM_TILE_DONE:
+    {
+        auto* result = reinterpret_cast<TileFetchResult*>(lParam);
+        if (result->cancelToken == g_tileCancel.load() && g_renderer && !result->pixels.empty())
+        {
+            g_renderer->UploadMapTileRaw(result->zoom, result->x, result->y,
+                                         result->pixels.data(), result->width, result->height);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        delete result;
+        return 0;
+    }
+
     case WM_DESTROY:
         SaveWindowPlacement(hwnd);
         ++g_decodeGeneration;
         ++g_prefetchCancel;  // Tüm prefetch thread'lerini durdur
         ++g_thumbCancel;     // Tüm thumbnail decode thread'lerini durdur
+        ++g_tileCancel;      // Tüm tile fetch thread'lerini durdur
         if (g_decodeThread.joinable())
             g_decodeThread.detach();
         KillTimer(hwnd, kZoomIndicatorTimerID);
@@ -1215,6 +1382,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         KillTimer(hwnd, kIndexIdleTimerID);
         KillTimer(hwnd, kIndexFadeTimerID);
         KillTimer(hwnd, kZoomFadeTimerID);
+        KillTimer(hwnd, kCopyFeedbackTimerID);
         timeEndPeriod(1);
         // Prefetch cache'ini temizle
         {

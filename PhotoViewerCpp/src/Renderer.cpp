@@ -145,6 +145,10 @@ void Renderer::DiscardDeviceResources()
     m_thumbCache.clear();
     m_thumbOrder.clear();
 
+    // OSM tile cache'ini serbest bırak
+    for (auto& [key, bmp] : m_mapTileCache) if (bmp) bmp->Release();
+    m_mapTileCache.clear();
+
     if (m_bitmap)           { m_bitmap->Release();           m_bitmap = nullptr; }
     if (m_separatorBrush)   { m_separatorBrush->Release();   m_separatorBrush = nullptr; }
     if (m_panelBgBrush)     { m_panelBgBrush->Release();     m_panelBgBrush = nullptr; }
@@ -353,8 +357,11 @@ static std::wstring FormatDateTaken(const std::wstring& raw, bool use12h)
 
 void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
 {
-    m_dateToggleVisible = false;
-    m_gpsLinkVisible    = false;
+    m_dateToggleVisible  = false;
+    m_gpsLinkVisible     = false;
+    m_mapPreviewVisible  = false;
+    m_mapCopyBtnVisible  = false;
+    m_mapToggleVisible   = false;
     if (!m_panelBgBrush || !m_whiteBrush) return;
 
     D2D1_SIZE_F sz = m_renderTarget->GetSize();
@@ -385,8 +392,8 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
     float x0 = sz.width - PanelLayout::Width + PanelLayout::PadX;
     float x1 = sz.width - PanelLayout::PadX;
 
-    // ── "Image Details" başlık bölümü ───────────────────────────────────────
-    constexpr float kHeaderH   = 48.0f;
+    // ── "Image Details" başlık bölümü (sabit — scrolllanmaz) ────────────────
+    constexpr float kHeaderH   = PanelLayout::HeaderH;
     constexpr float kHeaderTxt = 13.0f;  // m_valueFormat font boyutu
     float headerTxtY = (kHeaderH - kHeaderTxt) * 0.5f;
     m_renderTarget->DrawText(
@@ -403,7 +410,13 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
         m_separatorBrush, 1.0f
     );
 
-    float y = kHeaderH + PanelLayout::PadX;
+    // ── Kaydırılabilir içerik bölgesi (başlık altından pencere sonuna) ───────
+    D2D1_RECT_F contentClip = D2D1::RectF(
+        sz.width - vs.panelAnimWidth, kHeaderH, sz.width, sz.height);
+    m_renderTarget->PushAxisAlignedClip(contentClip, D2D1_ANTIALIAS_MODE_ALIASED);
+
+    // vs.panelScrollY piksel kadar yukarı kaydır
+    float y = kHeaderH + PanelLayout::PadX - vs.panelScrollY;
 
     constexpr float kLabelH = 17.0f;
     constexpr float kGap    = 4.0f;
@@ -590,36 +603,73 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
                 ? (info->gpsLatitude + L"  " + info->gpsLongitude)
                 : (info->gpsLatitude.empty() ? info->gpsLongitude : info->gpsLatitude);
 
-            // GPS Location etiket satırı — harita varsa küçük "↗" hint'i ekle (gri)
+            // GPS Location etiket satırı
             {
                 std::wstring label = info->hasGpsDecimal
-                    ? L"GPS Location \u2197"   // ↗ = tıklanabilir olduğunu gösterir
+                    ? L"GPS Location \u2197"   // ↗ = koordinata tıklanabilir
                     : L"GPS Location";
                 m_renderTarget->DrawText(
                     label.c_str(), static_cast<UINT32>(label.size()),
-                    m_labelFormat, D2D1::RectF(x0, y, x1, y + kLabelH),
+                    m_labelFormat,
+                    D2D1::RectF(x0, y, x1, y + kLabelH),
                     m_grayBrush
                 );
             }
 
-            // Koordinat değeri — harita linki varsa altı çizili
+            // Koordinat değeri — harita linki varsa altı çizili; sağda kopyala butonu
+            constexpr float kCopyBtnSize = 22.0f;
+            constexpr float kCopyBtnGap  =  6.0f;
             float valueY = y + kLabelH + kGap;
             if (info->hasGpsDecimal && m_dwriteFactory)
             {
+                const float coordX1 = x1 - kCopyBtnSize - kCopyBtnGap;
+                DWRITE_TEXT_METRICS tm{};
+                tm.height = kValueH;  // layout başarısız olursa varsayılan
                 IDWriteTextLayout* layout = nullptr;
                 if (SUCCEEDED(m_dwriteFactory->CreateTextLayout(
                     coords.c_str(), static_cast<UINT32>(coords.size()),
-                    m_valueFormat, x1 - x0, kValueH * 2.0f, &layout)))
+                    m_valueFormat, coordX1 - x0, kValueH * 2.0f, &layout)))
                 {
                     DWRITE_TEXT_RANGE all = { 0, static_cast<UINT32>(coords.size()) };
                     layout->SetUnderline(TRUE, all);
                     m_renderTarget->DrawTextLayout(D2D1::Point2F(x0, valueY), layout, m_whiteBrush);
 
-                    DWRITE_TEXT_METRICS tm{};
                     layout->GetMetrics(&tm);
                     m_gpsLinkRect    = D2D1::RectF(x0, valueY, x0 + tm.widthIncludingTrailingWhitespace, valueY + tm.height);
                     m_gpsLinkVisible = true;
                     layout->Release();
+                }
+
+                // Kopyala butonu — koordinat satırının sağında, dikey olarak ortalanmış
+                const float bx0 = x1 - kCopyBtnSize;
+                const float by0 = valueY + (tm.height - kCopyBtnSize) * 0.5f;
+                const float bx1 = x1;
+                const float by1 = by0 + kCopyBtnSize;
+                D2D1_RECT_F       btnRect = D2D1::RectF(bx0, by0, bx1, by1);
+                D2D1_ROUNDED_RECT btnRR   = { btnRect, 4.0f, 4.0f };
+
+                m_mapCopyBtnRect    = btnRect;
+                m_mapCopyBtnVisible = true;
+
+                if (m_separatorBrush)
+                    m_renderTarget->DrawRoundedRectangle(btnRR, m_separatorBrush, 1.0f);
+
+                const bool copied = (m_mapCopiedAt != 0) &&
+                                    (GetTickCount64() - m_mapCopiedAt < 1500ULL);
+                if (copied && m_toggleFormat)
+                {
+                    ID2D1SolidColorBrush* greenBrush = nullptr;
+                    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0x4CAF50), &greenBrush);
+                    if (greenBrush)
+                    {
+                        m_renderTarget->DrawText(L"\u2713", 1, m_toggleFormat, btnRect, greenBrush);
+                        greenBrush->Release();
+                    }
+                }
+                else if (m_grayBrush && m_toggleFormat)
+                {
+                    // ⧉ U+29C9 — kopyala simgesi
+                    m_renderTarget->DrawText(L"\u29C9", 1, m_toggleFormat, btnRect, m_grayBrush);
                 }
             }
             else
@@ -635,10 +685,22 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
             // Konum adı (Nominatim reverse geocoding)
             DrawRow(L"Location", info->gpsLocationName);
             DrawRow(L"Altitude", info->gpsAltitude);
+
+            // OSM harita önizlemesi — decimal koordinat varsa
+            if (info->hasGpsDecimal)
+            {
+                y += 8.0f;
+                DrawMapPreview(x0, x1, y, vs, info);
+                y += 150.0f + 8.0f;
+            }
         }
     }
 
-    m_renderTarget->PopAxisAlignedClip();
+    // Toplam içerik yüksekliğini kaydet (scroll sınırlaması için)
+    m_infoPanelContentH = (y + vs.panelScrollY) - (kHeaderH + PanelLayout::PadX);
+
+    m_renderTarget->PopAxisAlignedClip();  // içerik scroll clip
+    m_renderTarget->PopAxisAlignedClip();  // panel animasyon clip
 }
 
 // ─── Info Button ─────────────────────────────────────────────────────────────
@@ -715,14 +777,15 @@ void Renderer::Render(const ViewState& vs, const ImageInfo* info)
         D2D1_SIZE_F wndSize = m_renderTarget->GetSize();
         D2D1_SIZE_F imgSize = activeBitmap->GetSize();
 
-        float availW = wndSize.width - vs.panelAnimWidth;
-        float fitScale   = min(availW / imgSize.width, wndSize.height / imgSize.height);
+        float availW = wndSize.width  - vs.panelAnimWidth;
+        float availH = wndSize.height - vs.stripAnimHeight;
+        float fitScale   = min(availW / imgSize.width, availH / imgSize.height);
         float finalScale = fitScale * vs.zoomFactor;
 
         float destW = imgSize.width  * finalScale;
         float destH = imgSize.height * finalScale;
         float destX = (availW - destW) * 0.5f + vs.panX;
-        float destY = (wndSize.height - destH) * 0.5f + vs.panY;
+        float destY = (availH - destH) * 0.5f + vs.panY;
 
         m_renderTarget->DrawBitmap(
             activeBitmap,
@@ -1011,4 +1074,126 @@ void Renderer::DrawStripToggle(const ViewState& vs)
 
     m_stripToggleRect    = rect;
     m_stripToggleVisible = true;
+}
+
+// ─── OSM Harita Tile ──────────────────────────────────────────────────────────
+
+// Ham BGRA pre-mul piksellerden tile yükle — decode background thread'de yapıldı,
+// burada sadece D2D bitmap oluşturulur (çok hızlı, UI thread'i bloklamaz).
+void Renderer::UploadMapTileRaw(int zoom, int x, int y,
+                                const uint8_t* bgra, UINT w, UINT h)
+{
+    if (!m_renderTarget || !bgra || w == 0 || h == 0) return;
+
+    MapTileKey key{ zoom, x, y };
+
+    auto it = m_mapTileCache.find(key);
+    if (it != m_mapTileCache.end())
+    {
+        if (it->second) it->second->Release();
+        m_mapTileCache.erase(it);
+    }
+
+    D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+    );
+    ID2D1Bitmap* bmp = nullptr;
+    if (SUCCEEDED(m_renderTarget->CreateBitmap(D2D1::SizeU(w, h), bgra, w * 4, props, &bmp)) && bmp)
+        m_mapTileCache[key] = bmp;
+}
+
+// ─── OSM Harita Önizlemesi ────────────────────────────────────────────────────
+
+void Renderer::DrawMapPreview(float x0, float /*x1*/, float y, const ViewState& vs, const ImageInfo* info)
+{
+    if (!m_renderTarget || !info || !info->hasGpsDecimal) return;
+
+    constexpr float kW      = 288.0f;
+    constexpr float kH      = 150.0f;
+    constexpr float kRadius =   6.0f;
+    constexpr int   kZoom   =  14;
+
+    const float px0 = x0;
+    const float py0 = y;
+    const float px1 = px0 + kW;
+    const float py1 = py0 + kH;
+
+    D2D1_RECT_F       previewRect = D2D1::RectF(px0, py0, px1, py1);
+    D2D1_ROUNDED_RECT rr          = { previewRect, kRadius, kRadius };
+
+    m_mapPreviewRect    = previewRect;
+    m_mapPreviewVisible = true;
+
+    // ── Placeholder arka planı ─────────────────────────────────────────────
+    ID2D1SolidColorBrush* bgBrush = nullptr;
+    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0x2A2A2A), &bgBrush);
+    if (bgBrush) { m_renderTarget->FillRoundedRectangle(rr, bgBrush); bgBrush->Release(); }
+
+    // ── Tile koordinatları ─────────────────────────────────────────────────
+    int cx, cy, pinX, pinY;
+    LatLonToTileXY(info->gpsLatDecimal, info->gpsLonDecimal, kZoom, cx, cy);
+    LatLonToPixelInTile(info->gpsLatDecimal, info->gpsLonDecimal, kZoom,
+                        cx, cy, pinX, pinY);
+
+    // 3×2 grid: sütunlar cx-1, cx, cx+1 — satırlar cy-1, cy
+    // GPS mosaic koordinatı: (256 + pinX, 256 + pinY)
+    // Viewport'un sol üst köşesi mosaic'te: (viewLeft, viewTop)
+    const float viewLeft = 256.0f + static_cast<float>(pinX) - kW * 0.5f;
+    const float viewTop  = 256.0f + static_cast<float>(pinY) - kH * 0.5f;
+
+    // ── Tile'ları çiz (rounded clip geometry layer içinde) ─────────────────
+    ID2D1RoundedRectangleGeometry* clipGeom = nullptr;
+    m_factory->CreateRoundedRectangleGeometry(rr, &clipGeom);
+    if (clipGeom)
+    {
+        m_renderTarget->PushLayer(D2D1::LayerParameters(previewRect, clipGeom), nullptr);
+
+        for (int row = 0; row < 2; ++row)
+        {
+            for (int col = 0; col < 3; ++col)
+            {
+                MapTileKey key{ kZoom, cx - 1 + col, cy - 1 + row };
+                auto it = m_mapTileCache.find(key);
+                if (it == m_mapTileCache.end() || !it->second) continue;
+
+                const float tx = px0 + (col * 256.0f - viewLeft);
+                const float ty = py0 + (row * 256.0f - viewTop);
+                m_renderTarget->DrawBitmap(it->second, D2D1::RectF(tx, ty, tx + 256.0f, ty + 256.0f));
+            }
+        }
+
+        m_renderTarget->PopLayer();
+        clipGeom->Release();
+    }
+
+    // Hiç tile yüklü değilse "Loading map..." göster
+    bool anyTile = false;
+    for (int r = 0; r < 2 && !anyTile; ++r)
+        for (int c = 0; c < 3 && !anyTile; ++c)
+            anyTile = m_mapTileCache.count({ kZoom, cx - 1 + c, cy - 1 + r }) > 0;
+
+    if (!anyTile && m_labelFormat && m_grayBrush)
+    {
+        m_renderTarget->DrawText(
+            L"Loading map...", 14, m_labelFormat, previewRect, m_grayBrush);
+    }
+
+    // ── Kırmızı pin — previewRect'in tam ortası ────────────────────────────
+    constexpr float kPinR      = 7.0f;
+    constexpr float kPinBorder = 2.0f;
+    const float pinSx = px0 + kW * 0.5f;
+    const float pinSy = py0 + kH * 0.5f;
+    D2D1_ELLIPSE pinEllipse = D2D1::Ellipse(D2D1::Point2F(pinSx, pinSy), kPinR, kPinR);
+
+    ID2D1SolidColorBrush* redBrush = nullptr;
+    m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0xE53935), &redBrush);
+    if (redBrush)
+    {
+        m_renderTarget->FillEllipse(pinEllipse, redBrush);
+        redBrush->Release();
+    }
+    if (m_whiteBrush) m_renderTarget->DrawEllipse(pinEllipse, m_whiteBrush, kPinBorder);
+
+    // ── Önizleme dış çerçevesi ─────────────────────────────────────────────
+    if (m_separatorBrush) m_renderTarget->DrawRoundedRectangle(rr, m_separatorBrush, 1.0f);
 }
