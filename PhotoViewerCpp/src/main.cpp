@@ -9,7 +9,9 @@
 #include <atomic>          // std::atomic
 #include <vector>          // std::vector (DecodeResult piksel buffer'ı)
 #include <unordered_map>   // Prefetch cache
+#include <unordered_set>   // Prefetch desired set
 #include <mutex>           // std::mutex
+#include <semaphore>       // std::counting_semaphore
 #include <cstdint>
 #include "Renderer.h"
 #include "FolderNavigator.h"
@@ -22,6 +24,7 @@ static constexpr UINT     WM_TILE_DONE          = WM_APP + 2;
 static constexpr UINT     WM_THUMB_DONE         = WM_APP + 3;
 static constexpr UINT     WM_META_DONE          = WM_APP + 4;  // hızlı metadata aşaması
 static constexpr UINT     WM_LOCATION_DONE      = WM_APP + 5;  // Nominatim sonucu
+static constexpr UINT     WM_PREVIEW_DONE       = WM_APP + 6;  // HEIC gömülü thumbnail
 static constexpr UINT_PTR kZoomIndicatorTimerID = 1;
 static constexpr UINT_PTR kPanelAnimTimerID     = 2;
 static constexpr UINT_PTR kAnimTimerID          = 3;
@@ -77,6 +80,15 @@ struct LocationResult
     uint64_t     generation = 0;
 };
 
+// HEIC gömülü thumbnail sonucu — tam decode bitmeden anlık önizleme için
+struct PreviewResult
+{
+    std::vector<uint8_t> pixels;   // BGRA pre-mul
+    UINT     width      = 0;
+    UINT     height     = 0;
+    uint64_t generation = 0;
+};
+
 static std::atomic<uint64_t> g_decodeGeneration{0};
 static std::thread            g_decodeThread;
 
@@ -84,8 +96,16 @@ static std::thread            g_decodeThread;
 
 static std::mutex                                       g_cacheMutex;
 static std::unordered_map<std::wstring, DecodeResult*> g_decodeCache;
-static constexpr size_t                                kCacheMaxSize = 4;
-static std::atomic<uint64_t>                           g_prefetchCancel{0};
+static constexpr size_t                                kCacheMaxSize   = 24;  // ~1.15GB (12MP HEIC × 24)
+static constexpr int                                   kPrefetchRange  = 8;   // ±8 = 16 komşu
+
+// Path-based prefetch iptal seti: decode tamamlandığında path hâlâ
+// isteniyorsa cache'e eklenir, yoksa sonuç atılır.
+static std::mutex                                        g_prefetchDesiredMutex;
+static std::unordered_set<std::wstring>                  g_prefetchDesired;
+
+// Aynı anda en fazla 4 ağır decode (CPU thrash önlemi: her biri ~100ms, 6 foto/sn için yeterli)
+static std::counting_semaphore<16>                       g_prefetchSemaphore{4};
 
 // --- Thumbnail decode cancel ---
 static std::atomic<uint64_t>                           g_thumbCancel{0};
@@ -195,6 +215,32 @@ static void StartDecode(HWND hwnd, const std::wstring& path)
             }
         }
 
+        // ── Aşama 1b: HEIC gömülü thumbnail (~5-20ms, cache miss fallback) ────────
+        {
+            auto dot2 = path.rfind(L'.');
+            if (dot2 != std::wstring::npos)
+            {
+                std::wstring ext2 = path.substr(dot2 + 1);
+                for (auto& c : ext2) c = towupper(c);
+                if ((ext2 == L"HEIC" || ext2 == L"HEIF")
+                    && g_decodeGeneration.load() == gen)
+                {
+                    auto* prev = new PreviewResult{};
+                    prev->generation = gen;
+                    if (ExtractHEICEmbeddedPreview(path,
+                            prev->pixels, prev->width, prev->height))
+                    {
+                        PostMessage(hwnd, WM_PREVIEW_DONE, 0,
+                                    reinterpret_cast<LPARAM>(prev));
+                    }
+                    else
+                    {
+                        delete prev;
+                    }
+                }
+            }
+        }
+
         // ── Aşama 2: Piksel decode (Nominatim YOK — görsel hemen görünsün) ─────
         auto* result       = new DecodeResult();
         result->path       = path;
@@ -227,7 +273,9 @@ static void StartDecode(HWND hwnd, const std::wstring& path)
 }
 
 // Prefetch: arka planda decode edip cache'e ekler, mesaj göndermez.
-static void StartPrefetch(const std::wstring& path, uint64_t cancelToken)
+// cancelToken yerine g_prefetchDesired seti kullanılır: decode bitince path
+// hâlâ isteniyorsa cache'e eklenir, değilse sonuç atılır (thread waste az).
+static void StartPrefetch(const std::wstring& path)
 {
     if (path.empty()) return;
 
@@ -237,24 +285,29 @@ static void StartPrefetch(const std::wstring& path, uint64_t cancelToken)
         if (g_decodeCache.count(path)) return;
     }
 
-    std::thread([path, cancelToken]()
+    std::thread([path]()
     {
-        if (g_prefetchCancel.load() != cancelToken) return;
-
         CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+        g_prefetchSemaphore.acquire();   // CPU thrash önlemi: max 4 eş zamanlı decode
 
         auto* result = new DecodeResult();
         result->path = path;
 
         DoDecodeToResult(result, /*fetchLocation=*/false);
 
+        g_prefetchSemaphore.release();
+
         CoUninitialize();
 
-        // İptal edildi mi?
-        if (g_prefetchCancel.load() != cancelToken)
+        // Decode bitti — hâlâ isteniyor mu?
         {
-            delete result;
-            return;
+            std::lock_guard<std::mutex> lk(g_prefetchDesiredMutex);
+            if (!g_prefetchDesired.count(path))
+            {
+                delete result;   // artık istenmiyor, at
+                return;
+            }
         }
 
         // Cache'e ekle
@@ -517,19 +570,36 @@ static void ApplyDecodeResult(HWND hwnd, DecodeResult* result)
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-// Mevcut konumun next ve prev görüntülerini prefetch eder.
+// Mevcut konumun ±kPrefetchRange komşularını prefetch eder.
+// Yakından uzağa öncelik: +1,-1,+2,-2,... sırası ile thread başlatılır.
+// Semafor(4) sayesinde yakın komşular CPU slotunu önce alır.
 static void TriggerPrefetch()
 {
     if (!g_navigator || g_navigator->empty()) return;
 
-    uint64_t token = ++g_prefetchCancel;
+    std::unordered_set<std::wstring> newDesired;
+    std::vector<std::wstring>        ordered;   // yakından uzağa öncelik sırası
 
-    const std::wstring& nextPath = g_navigator->peek_next();
-    const std::wstring& prevPath = g_navigator->peek_prev();
+    for (int d = 1; d <= kPrefetchRange; ++d)
+    {
+        for (int sign : {+1, -1})
+        {
+            const std::wstring p = g_navigator->peek_at_linear(d * sign);
+            if (!p.empty() && !newDesired.count(p))
+            {
+                newDesired.insert(p);
+                ordered.push_back(p);
+            }
+        }
+    }
 
-    StartPrefetch(nextPath, token);
-    if (prevPath != nextPath)
-        StartPrefetch(prevPath, token);
+    {
+        std::lock_guard<std::mutex> lk(g_prefetchDesiredMutex);
+        g_prefetchDesired = newDesired;
+    }
+
+    for (const auto& p : ordered)
+        StartPrefetch(p);
 }
 
 // --- Thumbnail decode yardımcıları ---
@@ -1468,6 +1538,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
 
+    case WM_PREVIEW_DONE:
+    {
+        auto* prev = reinterpret_cast<PreviewResult*>(lParam);
+        if (prev->generation == g_decodeGeneration.load()
+            && g_renderer && !prev->pixels.empty())
+        {
+            // Gömülü HEIC thumbnail'i geçici olarak göster; WM_DECODE_DONE tam görseli yazar
+            g_renderer->LoadImageFromPixels(
+                prev->pixels.data(), prev->width, prev->height, L"");
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        delete prev;
+        return 0;
+    }
+
     case WM_THUMB_DONE:
     {
         auto* result = reinterpret_cast<ThumbResult*>(lParam);
@@ -1500,7 +1585,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_DESTROY:
         SaveWindowPlacement(hwnd);
         ++g_decodeGeneration;
-        ++g_prefetchCancel;  // Tüm prefetch thread'lerini durdur
+        // Prefetch thread'leri g_prefetchDesired üzerinden kontrol edilir
+        { std::lock_guard<std::mutex> lk(g_prefetchDesiredMutex); g_prefetchDesired.clear(); }
         ++g_thumbCancel;     // Tüm thumbnail decode thread'lerini durdur
         ++g_tileCancel;      // Tüm tile fetch thread'lerini durdur
         if (g_decodeThread.joinable())

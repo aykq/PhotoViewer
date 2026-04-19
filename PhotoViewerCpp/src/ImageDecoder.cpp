@@ -1431,6 +1431,72 @@ static bool ExtractMetaHEIF(const std::wstring& path, DecodeOutput& out)
     return out.width > 0;
 }
 
+// ─── HEIC gömülü thumbnail decoder ───────────────────────────────────────────
+// HEIC/HEIF container'ındaki embedded thumbnail'i decode eder (~5-20ms).
+// iPhone/kamera fotoğraflarında genellikle 512×384 veya daha küçük bir JPEG/HEVC
+// thumbnail bulunur. Tam decode (~100-200ms) tamamlanana kadar anlık önizleme sağlar.
+
+bool ExtractHEICEmbeddedPreview(const std::wstring& path,
+                                 std::vector<uint8_t>& pixelsOut,
+                                 UINT& widthOut, UINT& heightOut)
+{
+    auto data = ReadFileBytes(path);
+    if (data.empty()) return false;
+
+    heif_context* ctx = heif_context_alloc();
+    heif_error err = heif_context_read_from_memory_without_copy(
+        ctx, data.data(), data.size(), nullptr);
+    if (err.code != heif_error_Ok) { heif_context_free(ctx); return false; }
+
+    heif_image_handle* handle = nullptr;
+    err = heif_context_get_primary_image_handle(ctx, &handle);
+    if (err.code != heif_error_Ok) { heif_context_free(ctx); return false; }
+
+    int nThumbs = heif_image_handle_get_number_of_thumbnails(handle);
+    if (nThumbs <= 0)
+    {
+        heif_image_handle_release(handle);
+        heif_context_free(ctx);
+        return false;
+    }
+
+    heif_item_id thumbId;
+    heif_image_handle_get_list_of_thumbnail_IDs(handle, &thumbId, 1);
+
+    heif_image_handle* thumbHandle = nullptr;
+    err = heif_image_handle_get_thumbnail(handle, thumbId, &thumbHandle);
+    heif_image_handle_release(handle);
+    if (err.code != heif_error_Ok) { heif_context_free(ctx); return false; }
+
+    heif_image* img = nullptr;
+    // Thumbnail küçük olduğu için threading options gerekmez
+    err = heif_decode_image(thumbHandle, &img,
+                            heif_colorspace_RGB, heif_chroma_interleaved_RGBA, nullptr);
+    heif_image_handle_release(thumbHandle);
+    if (err.code != heif_error_Ok) { heif_context_free(ctx); return false; }
+
+    int stride = 0;
+    const uint8_t* src = heif_image_get_plane_readonly(
+        img, heif_channel_interleaved, &stride);
+    const int w = heif_image_get_width(img,  heif_channel_interleaved);
+    const int h = heif_image_get_height(img, heif_channel_interleaved);
+
+    widthOut  = static_cast<UINT>(w);
+    heightOut = static_cast<UINT>(h);
+    pixelsOut.resize(static_cast<size_t>(w) * h * 4);
+    for (int row = 0; row < h; row++)
+        memcpy(pixelsOut.data() + static_cast<size_t>(row) * w * 4,
+               src              + static_cast<size_t>(row) * stride,
+               static_cast<size_t>(w) * 4);
+
+    heif_image_release(img);
+    heif_context_free(ctx);
+
+    // RGBA → BGRA + premultiply (tek geçiş)
+    SwapRBAndPremultiply(pixelsOut.data(), widthOut, heightOut);
+    return true;
+}
+
 static bool ExtractMetaJXL(const std::wstring& path, DecodeOutput& out)
 {
     auto data = ReadFileBytes(path);

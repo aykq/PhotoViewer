@@ -85,3 +85,10 @@ std::vector<uint8_t> FetchOsmTile(int zoom, int x, int y);
 // outW/outH doldurulur; başarısızsa false döner.
 bool DecodePngToPixels(const uint8_t* pngBytes, size_t byteCount,
                        std::vector<uint8_t>& outPixels, UINT& outW, UINT& outH);
+
+// HEIC/HEIF dosyasındaki gömülü küçük resmi hızlıca decode eder (~5-20ms).
+// iPhone/kamera HEIC dosyalarında genellikle bulunur; yoksa false döner.
+// Başarılıysa pixelsOut BGRA pre-mul, boyut widthOut × heightOut.
+bool ExtractHEICEmbeddedPreview(const std::wstring& path,
+                                 std::vector<uint8_t>& pixelsOut,
+                                 UINT& widthOut, UINT& heightOut);
