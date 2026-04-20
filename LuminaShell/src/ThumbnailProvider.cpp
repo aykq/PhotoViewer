@@ -14,11 +14,11 @@
 #pragma comment(lib, "winhttp.lib")
 
 // ─── CLSID: {3C7F5A2D-4B8E-4F5C-A1B2-3C4D5E6F7A8B} ─────────────────────────
-static const CLSID CLSID_PhotoViewerThumb =
+static const CLSID CLSID_LuminaThumb =
     { 0x3C7F5A2D, 0x4B8E, 0x4F5C, { 0xA1, 0xB2, 0x3C, 0x4D, 0x5E, 0x6F, 0x7A, 0x8B } };
 
 static const wchar_t k_clsid[]       = L"{3C7F5A2D-4B8E-4F5C-A1B2-3C4D5E6F7A8B}";
-static const wchar_t k_desc[]        = L"PhotoViewer Thumbnail Handler";
+static const wchar_t k_desc[]        = L"Lumina Thumbnail Handler";
 // IThumbnailProvider shell extension key GUID
 static const wchar_t k_thumbExtGuid[] = L"{E357FCCD-A995-4576-B01F-234630154E96}";
 
@@ -187,7 +187,7 @@ HRESULT DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv)
 {
     if (!ppv) return E_POINTER;
     *ppv = nullptr;
-    if (rclsid != CLSID_PhotoViewerThumb) return CLASS_E_CLASSNOTAVAILABLE;
+    if (rclsid != CLSID_LuminaThumb) return CLASS_E_CLASSNOTAVAILABLE;
     auto* pF = new(std::nothrow) CClassFactory();
     if (!pF) return E_OUTOFMEMORY;
     HRESULT hr = pF->QueryInterface(riid, ppv);

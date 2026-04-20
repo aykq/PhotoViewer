@@ -1,4 +1,4 @@
-LIBRARY PhotoViewerShell
+LIBRARY LuminaShell
 
 EXPORTS
     DllGetClassObject   PRIVATE

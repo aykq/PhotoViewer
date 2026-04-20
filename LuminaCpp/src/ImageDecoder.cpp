@@ -1623,7 +1623,7 @@ std::wstring FetchLocationName(double lat, double lon)
     wchar_t reqPath[128];
     swprintf_s(reqPath, L"/reverse?lat=%.6f&lon=%.6f&format=json", lat, lon);
 
-    HINTERNET hSession = WinHttpOpen(L"PhotoViewer/1.0",
+    HINTERNET hSession = WinHttpOpen(L"Lumina/1.0",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return {};
 
@@ -1959,7 +1959,7 @@ std::vector<uint8_t> FetchOsmTile(int zoom, int x, int y)
 
     // CartoDB CDN bazı tarayıcı dışı UA'ları reddediyor; genel UA kullan
     HINTERNET hSession = WinHttpOpen(
-        L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) PhotoViewer/2.0",
+        L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Lumina/2.0",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return {};
 

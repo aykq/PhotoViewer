@@ -337,12 +337,12 @@ static void ApplyDecodeResult(HWND hwnd, DecodeResult* result);  // ileriye bild
 
 static void UpdateWindowTitle(HWND hwnd, const std::wstring& filePath)
 {
-    std::wstring title = L"PhotoViewer";
+    std::wstring title = L"Lumina";
     if (!filePath.empty())
     {
         auto pos = filePath.find_last_of(L"\\/");
         std::wstring name = (pos != std::wstring::npos) ? filePath.substr(pos + 1) : filePath;
-        title = name + L" \u2014 PhotoViewer";
+        title = name + L" \u2014 Lumina";
     }
     SetWindowTextW(hwnd, title.c_str());
 }
@@ -407,7 +407,7 @@ static bool HitTestInfoButton(HWND hwnd, float x, float y, float panelW)
 
 // --- Registry ayarları ---
 
-static constexpr wchar_t kRegKey[] = L"Software\\PhotoViewer";
+static constexpr wchar_t kRegKey[] = L"Software\\Lumina";
 
 static void SaveSettings()
 {
@@ -1646,15 +1646,15 @@ int WINAPI WinMain(
     wc.hInstance     = hInstance;
     wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = nullptr;
-    wc.lpszClassName = L"PhotoViewerWindow";
+    wc.lpszClassName = L"LuminaWindow";
     RegisterClassEx(&wc);
 
-    std::wstring title = L"PhotoViewer";
+    std::wstring title = L"Lumina";
     if (!filePath.empty())
     {
         auto pos = filePath.find_last_of(L"\\/");
         std::wstring name = (pos != std::wstring::npos) ? filePath.substr(pos + 1) : filePath;
-        title = name + L" \u2014 PhotoViewer";
+        title = name + L" \u2014 Lumina";
     }
 
     int winX = g_savedWindowRect.valid ? g_savedWindowRect.x : CW_USEDEFAULT;
@@ -1664,7 +1664,7 @@ int WINAPI WinMain(
 
     HWND hwnd = CreateWindowEx(
         0,
-        L"PhotoViewerWindow",
+        L"LuminaWindow",
         title.c_str(),
         WS_OVERLAPPEDWINDOW,
         winX, winY, winW, winH,
