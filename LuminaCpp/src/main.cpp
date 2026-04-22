@@ -1647,6 +1647,8 @@ int WINAPI WinMain(
     wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = nullptr;
     wc.lpszClassName = L"LuminaWindow";
+    wc.hIcon         = LoadIcon(hInstance, MAKEINTRESOURCE(101));
+    wc.hIconSm       = (HICON)LoadImage(hInstance, MAKEINTRESOURCE(101), IMAGE_ICON, 16, 16, 0);
     RegisterClassEx(&wc);
 
     std::wstring title = L"Lumina";

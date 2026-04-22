@@ -39,6 +39,9 @@
   <ImportGroup Label="Shared" />
   <ImportGroup Label="PropertySheets" />
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <IntDir>$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+  </PropertyGroup>
   <!-- Debug x64 -->
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -86,6 +89,11 @@
   <ItemGroup>
     <ClInclude Include="src\Renderer.h" />
     <ClInclude Include="src\ImageDecoder.h" />
+  </ItemGroup>
+  <!-- Uygulama kaynakları (icon + versiyon bilgisi) -->
+  <ItemGroup>
+    <ResourceCompile Include="src\Lumina.rc" />
+    <None Include="src\Lumina.ico" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
