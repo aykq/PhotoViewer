@@ -179,6 +179,19 @@ static HRESULT RegWriteStr(HKEY hRoot, const wchar_t* path,
     return HRESULT_FROM_WIN32(r);
 }
 
+static HRESULT RegWriteDword(HKEY hRoot, const wchar_t* path,
+                              const wchar_t* name, DWORD value)
+{
+    HKEY hKey = nullptr;
+    LONG r = RegCreateKeyExW(hRoot, path, 0, nullptr, 0,
+                              KEY_SET_VALUE, nullptr, &hKey, nullptr);
+    if (r != ERROR_SUCCESS) return HRESULT_FROM_WIN32(r);
+    r = RegSetValueExW(hKey, name, 0, REG_DWORD,
+        reinterpret_cast<const BYTE*>(&value), sizeof(DWORD));
+    RegCloseKey(hKey);
+    return HRESULT_FROM_WIN32(r);
+}
+
 // ─── DLL Exports ─────────────────────────────────────────────────────────────
 extern "C"
 {
@@ -217,6 +230,8 @@ HRESULT DllRegisterServer()
     RegWriteStr(hRoot, clsidBase, nullptr, k_desc);
     RegWriteStr(hRoot, inproc,    nullptr, dllPath);
     RegWriteStr(hRoot, inproc,    L"ThreadingModel", L"Both");
+    // Windows 11: bu DWORD olmadan Explorer thumbnail handler'ı hiç çağırmaz
+    RegWriteDword(hRoot, clsidBase, L"DisableProcessIsolation", 1);
 
     // Shell Extensions Approved (her ikisine de yaz)
     RegWriteStr(HKEY_CURRENT_USER,
@@ -263,6 +278,13 @@ HRESULT DllUnregisterServer()
 
     for (HKEY hRoot : { HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE })
     {
+        // DisableProcessIsolation value'su önce silinmeli, sonra key silinebilir
+        HKEY hClsid;
+        if (RegOpenKeyExW(hRoot, clsidBase, 0, KEY_SET_VALUE, &hClsid) == ERROR_SUCCESS)
+        {
+            RegDeleteValueW(hClsid, L"DisableProcessIsolation");
+            RegCloseKey(hClsid);
+        }
         RegDeleteKeyW(hRoot, inproc);
         RegDeleteKeyW(hRoot, clsidBase);
         HKEY hApproved;
