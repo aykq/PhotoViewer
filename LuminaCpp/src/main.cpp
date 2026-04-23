@@ -940,9 +940,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if (cy >= wndH - g_viewState.stripAnimHeight)
             {
                 if (delta > 0)
-                    NavigateTo(hwnd, g_navigator->prev());
-                else
                     NavigateTo(hwnd, g_navigator->next());
+                else
+                    NavigateTo(hwnd, g_navigator->prev());
                 return 0;
             }
         }
