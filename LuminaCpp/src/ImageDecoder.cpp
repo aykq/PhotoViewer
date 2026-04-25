@@ -1,6 +1,7 @@
 #include "ImageDecoder.h"
 
 #include <wincodec.h>
+#include <wincodecsdk.h>   // IWICMetadataBlockReader/Writer, IWICMetadataQueryWriter
 #include <winhttp.h>
 #include <cwchar>
 #include <cstring>  // memcpy
@@ -11,10 +12,13 @@
 // vcpkg bundled decoders
 #include <webp/decode.h>
 #include <webp/demux.h>   // WebPAnimDecoder (animated WebP)
+#include <webp/encode.h>  // WebPEncodeRGBA (encode)
 #include <libheif/heif.h>
 #include <jxl/decode.h>
 #include <jxl/codestream_header.h>
 #include <jxl/thread_parallel_runner.h>
+// jxl/encode.h intentionally excluded — JXL encoder objects in jxl.lib require
+// __std_rotate/__std_unique_4 (MSVC 17.7+ STL intrinsics) incompatible with v143 toolset.
 #include <avif/avif.h>
 
 #pragma comment(lib, "libwebpdemux.lib")
@@ -1839,9 +1843,20 @@ bool DecodeImageForThumbnail(const std::wstring& path, UINT targetH,
                               std::vector<uint8_t>& pixelsOut,
                               UINT& widthOut, UINT& heightOut)
 {
-    // WIC hızlı yolu (JPEG, PNG, BMP, TIFF, GIF, ICO)
-    if (DecodeThumbWithWIC(path, targetH, pixelsOut, widthOut, heightOut))
-        return true;
+    // WIC hızlı yolu (JPEG, PNG, BMP, TIFF, GIF, ICO) — HEIC/HEIF için atlanır:
+    // sistem WIC HEIC codec'i ICC renk dönüşümü yapmaz, EXIF yönelimi uygulamaz;
+    // sonuç siyah veya renk bozuk piksel olabilir.
+    {
+        bool skipWic = false;
+        size_t dot = path.rfind(L'.');
+        if (dot != std::wstring::npos) {
+            std::wstring ext = path.substr(dot);
+            for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+            skipWic = (ext == L".heic" || ext == L".heif");
+        }
+        if (!skipWic && DecodeThumbWithWIC(path, targetH, pixelsOut, widthOut, heightOut))
+            return true;
+    }
 
     // HEIC/HEIF: gömülü thumbnail (~5-20ms), tam decode yerine kullan (~100-200ms)
     // Explorer hover'da yeni GetThumbnail çağrısı yapar; yavaş decode timeout'a girip
@@ -2077,4 +2092,382 @@ bool DecodePngToPixels(const uint8_t* pngBytes, size_t byteCount,
     outW = w;
     outH = h;
     return true;
+}
+
+// ─── Kayıt (encode) yardımcıları ─────────────────────────────────────────────
+
+// BGRA pre-multiplied → BGRA düz alfa (kayıt öncesi ön hazırlık)
+static void UnpremultiplyInPlace(uint8_t* pixels, UINT count)
+{
+    for (UINT i = 0; i < count; ++i) {
+        uint8_t* p = pixels + i * 4;
+        const uint32_t a = p[3];
+        if (a == 0 || a == 255) continue;
+        p[0] = static_cast<uint8_t>(min(255u, (p[0] * 255u + a / 2) / a));
+        p[1] = static_cast<uint8_t>(min(255u, (p[1] * 255u + a / 2) / a));
+        p[2] = static_cast<uint8_t>(min(255u, (p[2] * 255u + a / 2) / a));
+    }
+}
+
+static bool WriteAllBytes(const std::wstring& path, const void* data, DWORD size)
+{
+    HANDLE hf = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hf == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    bool ok = WriteFile(hf, data, size, &written, nullptr) && written == size;
+    CloseHandle(hf);
+    return ok;
+}
+
+// WIC encoder: JPEG, PNG, BMP, TIFF
+// sourcePath: dolu ise kaynak dosyanın EXIF/metadata blokları kopyalanır ve
+//             Orientation etiketi 1 (normal) olarak sıfırlanır (pikseller zaten döndürülmüş).
+static bool SaveImageWIC(const std::wstring& path, const GUID& fmt,
+                          const uint8_t* bgraStraight, UINT width, UINT height,
+                          const std::wstring& sourcePath = L"")
+{
+    IWICImagingFactory* wic = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+                                CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))))
+        return false;
+
+    bool isJpeg = (fmt == GUID_ContainerFormatJpeg);
+    bool isTiff = (fmt == GUID_ContainerFormatTiff);
+
+    // Metadata pre-read: kaynak dosya, çıktıyla aynı olsa bile WICDecodeMetadataCacheOnLoad
+    // tüm veriyi belleğe alır; çıktı akışı açılmadan önce okunan bloklar güvenle kullanılabilir.
+    IWICBitmapDecoder*   srcDecoder  = nullptr;
+    IWICBitmapFrameDecode* srcFrame  = nullptr;
+    IWICMetadataBlockReader* blkRdr  = nullptr;
+
+    if (!sourcePath.empty() && (isJpeg || isTiff))
+    {
+        if (SUCCEEDED(wic->CreateDecoderFromFilename(
+                sourcePath.c_str(), nullptr, GENERIC_READ,
+                WICDecodeMetadataCacheOnLoad, &srcDecoder)))
+        {
+            if (SUCCEEDED(srcDecoder->GetFrame(0, &srcFrame)))
+                srcFrame->QueryInterface(IID_IWICMetadataBlockReader,
+                                         reinterpret_cast<void**>(&blkRdr));
+        }
+    }
+
+    IWICStream* stream = nullptr;
+    HRESULT hr = wic->CreateStream(&stream);
+    if (FAILED(hr)) goto cleanup_early;
+    hr = stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE);
+    if (FAILED(hr)) { stream->Release(); stream = nullptr; goto cleanup_early; }
+
+    {
+        IWICBitmapEncoder* encoder = nullptr;
+        hr = wic->CreateEncoder(fmt, nullptr, &encoder);
+        if (FAILED(hr)) { stream->Release(); goto cleanup_early; }
+        hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
+        if (FAILED(hr)) { encoder->Release(); stream->Release(); goto cleanup_early; }
+
+        IWICBitmapFrameEncode* frame = nullptr;
+        IPropertyBag2* props = nullptr;
+        hr = encoder->CreateNewFrame(&frame, &props);
+        if (FAILED(hr)) { encoder->Release(); stream->Release(); goto cleanup_early; }
+
+        if (isJpeg && props) {
+            PROPBAG2 opt{};
+            opt.pstrName = const_cast<OLECHAR*>(L"ImageQuality");
+            VARIANT var{};
+            var.vt     = VT_R4;
+            var.fltVal = 0.92f;
+            props->Write(1, &opt, &var);
+        }
+        frame->Initialize(props);  // props (or nullptr) geçirilmeli; Release'den önce
+        if (props) props->Release();
+        frame->SetSize(width, height);
+        WICPixelFormatGUID pixFmt = isJpeg ? GUID_WICPixelFormat24bppBGR
+                                           : GUID_WICPixelFormat32bppBGRA;
+        frame->SetPixelFormat(&pixFmt);
+
+        // Metadata kopyala (JPEG / TIFF)
+        if (blkRdr)
+        {
+            IWICMetadataBlockWriter* blkWr = nullptr;
+            if (SUCCEEDED(frame->QueryInterface(IID_IWICMetadataBlockWriter,
+                                                reinterpret_cast<void**>(&blkWr))))
+            {
+                blkWr->InitializeFromBlockReader(blkRdr);  // hata varsa yoksay, metadata olmadan devam
+                blkWr->Release();
+            }
+
+            // Orientation = 1 (Normal): pikseller zaten fiziksel olarak döndürülmüş
+            IWICMetadataQueryWriter* qWr = nullptr;
+            if (SUCCEEDED(frame->GetMetadataQueryWriter(&qWr)))
+            {
+                PROPVARIANT pv;
+                PropVariantInit(&pv);
+                pv.vt    = VT_UI2;
+                pv.uiVal = 1;
+                if (isJpeg) qWr->SetMetadataByName(L"/app1/ifd/{ushort=274}", &pv);
+                if (isTiff) qWr->SetMetadataByName(L"/ifd/{ushort=274}",      &pv);
+                PropVariantClear(&pv);
+                qWr->Release();
+            }
+        }
+
+        bool ok = false;
+        if (isJpeg) {
+            std::vector<uint8_t> bgr(static_cast<size_t>(width) * height * 3);
+            for (UINT i = 0; i < width * height; ++i) {
+                bgr[i * 3 + 0] = bgraStraight[i * 4 + 0];
+                bgr[i * 3 + 1] = bgraStraight[i * 4 + 1];
+                bgr[i * 3 + 2] = bgraStraight[i * 4 + 2];
+            }
+            ok = SUCCEEDED(frame->WritePixels(height, width * 3,
+                                              static_cast<UINT>(bgr.size()), bgr.data()));
+        } else {
+            ok = SUCCEEDED(frame->WritePixels(height, width * 4, width * height * 4,
+                                              const_cast<uint8_t*>(bgraStraight)));
+        }
+        ok = ok && SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit());
+
+        frame->Release();
+        encoder->Release();
+        stream->Release();
+
+        if (blkRdr)   blkRdr->Release();
+        if (srcFrame) srcFrame->Release();
+        if (srcDecoder) srcDecoder->Release();
+        wic->Release();
+        return ok;
+    }
+
+cleanup_early:
+    if (blkRdr)    blkRdr->Release();
+    if (srcFrame)  srcFrame->Release();
+    if (srcDecoder) srcDecoder->Release();
+    wic->Release();
+    return false;
+}
+
+// WebP encoder: libwebp
+static bool SaveImageWebP(const std::wstring& path, const uint8_t* bgraStraight,
+                           UINT width, UINT height)
+{
+    // BGRA → RGBA
+    std::vector<uint8_t> rgba(static_cast<size_t>(width) * height * 4);
+    for (UINT i = 0; i < width * height; ++i) {
+        rgba[i * 4 + 0] = bgraStraight[i * 4 + 2];
+        rgba[i * 4 + 1] = bgraStraight[i * 4 + 1];
+        rgba[i * 4 + 2] = bgraStraight[i * 4 + 0];
+        rgba[i * 4 + 3] = bgraStraight[i * 4 + 3];
+    }
+    uint8_t* output = nullptr;
+    size_t outputSize = WebPEncodeRGBA(rgba.data(), static_cast<int>(width),
+                                       static_cast<int>(height),
+                                       static_cast<int>(width * 4), 90.0f, &output);
+    bool ok = (output && outputSize > 0)
+           && WriteAllBytes(path, output, static_cast<DWORD>(outputSize));
+    WebPFree(output);
+    return ok;
+}
+
+// HEIC encoder: libheif (HEVC; AV1 fallback)
+static bool SaveImageHEIC(const std::wstring& path, const uint8_t* bgraStraight,
+                           UINT width, UINT height)
+{
+    heif_context* ctx = heif_context_alloc();
+    if (!ctx) return false;
+
+    heif_encoder* enc = nullptr;
+    heif_error err = heif_context_get_encoder_for_format(ctx, heif_compression_HEVC, &enc);
+    if (err.code != heif_error_Ok)
+        err = heif_context_get_encoder_for_format(ctx, heif_compression_AV1, &enc);
+    if (err.code != heif_error_Ok) { heif_context_free(ctx); return false; }
+
+    heif_encoder_set_lossy_quality(enc, 85);
+
+    bool hasAlpha = false;
+    for (UINT i = 0; i < width * height; ++i)
+        if (bgraStraight[i * 4 + 3] < 255) { hasAlpha = true; break; }
+
+    heif_image* img = nullptr;
+    heif_chroma chroma = hasAlpha ? heif_chroma_interleaved_RGBA : heif_chroma_interleaved_RGB;
+    err = heif_image_create(static_cast<int>(width), static_cast<int>(height),
+                            heif_colorspace_RGB, chroma, &img);
+    if (err.code != heif_error_Ok) { heif_encoder_release(enc); heif_context_free(ctx); return false; }
+
+    err = heif_image_add_plane(img, heif_channel_interleaved,
+                               static_cast<int>(width), static_cast<int>(height),
+                               hasAlpha ? 32 : 24);
+    if (err.code != heif_error_Ok) {
+        heif_image_release(img); heif_encoder_release(enc); heif_context_free(ctx); return false;
+    }
+
+    int stride = 0;
+    uint8_t* plane = heif_image_get_plane(img, heif_channel_interleaved, &stride);
+
+    for (UINT y = 0; y < height; ++y)
+        for (UINT x = 0; x < width; ++x) {
+            const uint8_t* s = bgraStraight + (y * width + x) * 4;
+            uint8_t* d = plane + y * stride + x * (hasAlpha ? 4 : 3);
+            d[0] = s[2]; d[1] = s[1]; d[2] = s[0];
+            if (hasAlpha) d[3] = s[3];
+        }
+
+    heif_encoding_options* opts = heif_encoding_options_alloc();
+    heif_image_handle* outHandle = nullptr;
+    err = heif_context_encode_image(ctx, img, enc, opts, &outHandle);
+    heif_encoding_options_free(opts);
+
+    // Filmstrip ve hızlı önizleme için gömülü thumbnail ekle.
+    // bgraStraight üzerinden önceden ölçeklenerek fresh encoder ile encode edilir;
+    // ana encode'da kullanılan enc'yi yeniden kullanmak libheif'in thumbnail encode
+    // etmemesine yol açabilir ve kullanıcı tam decode (~1-3s) bitene kadar boş ekran görür.
+    if (err.code == heif_error_Ok && outHandle) {
+        // 512px sınırına ölçekle, en-boy oranını koru
+        UINT tW, tH;
+        if (width >= height) { tW = (width  < 512u ? width  : 512u); tH = max(1u, height * tW / width); }
+        else                  { tH = (height < 512u ? height : 512u); tW = max(1u, width  * tH / height); }
+
+        // bgraStraight → RGB(/RGBA) nearest-neighbor küçük resim
+        const UINT bpp = hasAlpha ? 4u : 3u;
+        std::vector<uint8_t> thumbRgb(static_cast<size_t>(tW) * tH * bpp);
+        for (UINT ty = 0; ty < tH; ++ty) {
+            const UINT sy = ty * height / tH;
+            for (UINT tx = 0; tx < tW; ++tx) {
+                const UINT sx = tx * width / tW;
+                const uint8_t* s = bgraStraight + (sy * width + sx) * 4;
+                uint8_t* d = thumbRgb.data() + (ty * tW + tx) * bpp;
+                d[0] = s[2]; d[1] = s[1]; d[2] = s[0];   // BGR → RGB
+                if (hasAlpha) d[3] = s[3];
+            }
+        }
+
+        heif_image* tImg = nullptr;
+        heif_chroma tChroma = hasAlpha ? heif_chroma_interleaved_RGBA : heif_chroma_interleaved_RGB;
+        if (heif_image_create(static_cast<int>(tW), static_cast<int>(tH),
+                              heif_colorspace_RGB, tChroma, &tImg).code == heif_error_Ok) {
+            if (heif_image_add_plane(tImg, heif_channel_interleaved,
+                                     static_cast<int>(tW), static_cast<int>(tH),
+                                     hasAlpha ? 32 : 24).code == heif_error_Ok) {
+                int tStride = 0;
+                uint8_t* tPlane = heif_image_get_plane(tImg, heif_channel_interleaved, &tStride);
+                for (UINT ty = 0; ty < tH; ++ty)
+                    memcpy(tPlane + static_cast<ptrdiff_t>(ty) * tStride,
+                           thumbRgb.data() + static_cast<size_t>(ty) * tW * bpp,
+                           static_cast<size_t>(tW) * bpp);
+
+                heif_encoder* tEnc = nullptr;
+                heif_context_get_encoder_for_format(ctx, heif_compression_HEVC, &tEnc);
+                if (!tEnc)
+                    heif_context_get_encoder_for_format(ctx, heif_compression_AV1, &tEnc);
+                if (tEnc) {
+                    heif_encoder_set_lossy_quality(tEnc, 60);
+                    heif_encoding_options* tOpts   = heif_encoding_options_alloc();
+                    heif_image_handle*     tHandle = nullptr;
+                    heif_context_encode_thumbnail(ctx, tImg, outHandle, tEnc, tOpts, 512, &tHandle);
+                    heif_encoding_options_free(tOpts);
+                    heif_encoder_release(tEnc);
+                    if (tHandle) heif_image_handle_release(tHandle);
+                }
+            }
+            heif_image_release(tImg);
+        }
+    }
+
+    heif_image_release(img);
+    heif_encoder_release(enc);
+
+    bool ok = false;
+    if (err.code == heif_error_Ok) {
+        char pathUtf8[MAX_PATH * 4]{};
+        WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1,
+                            pathUtf8, static_cast<int>(sizeof(pathUtf8)), nullptr, nullptr);
+        ok = (heif_context_write_to_file(ctx, pathUtf8).code == heif_error_Ok);
+    }
+    if (outHandle) heif_image_handle_release(outHandle);
+    heif_context_free(ctx);
+    return ok;
+}
+
+// JXL encoder disabled — libjxl encoder objects require __std_rotate/__std_unique_4
+// (MSVC 17.7+ STL intrinsics) that are incompatible with the v143 toolset.
+// JXL decode (viewing) continues to work; only JXL save is unavailable.
+static bool SaveImageJXL(const std::wstring&, const uint8_t*, UINT, UINT)
+{
+    return false;
+}
+
+// AVIF encoder: libavif
+static bool SaveImageAVIF(const std::wstring& path, const uint8_t* bgraStraight,
+                           UINT width, UINT height)
+{
+    bool hasAlpha = false;
+    for (UINT i = 0; i < width * height; ++i)
+        if (bgraStraight[i * 4 + 3] < 255) { hasAlpha = true; break; }
+
+    avifImage* img = avifImageCreate(width, height, 8, AVIF_PIXEL_FORMAT_YUV420);
+    if (!img) return false;
+
+    img->colorPrimaries          = AVIF_COLOR_PRIMARIES_BT709;
+    img->transferCharacteristics = AVIF_TRANSFER_CHARACTERISTICS_SRGB;
+    img->matrixCoefficients      = AVIF_MATRIX_COEFFICIENTS_BT601;
+    img->yuvRange                = AVIF_RANGE_FULL;
+
+    avifRGBImage rgb{};
+    avifRGBImageSetDefaults(&rgb, img);
+    rgb.format = AVIF_RGB_FORMAT_BGRA;
+    rgb.depth  = 8;
+
+    if (avifRGBImageAllocatePixels(&rgb) != AVIF_RESULT_OK) {
+        avifImageDestroy(img); return false;
+    }
+    memcpy(rgb.pixels, bgraStraight, static_cast<size_t>(width) * height * 4);
+
+    avifResult res = avifImageRGBToYUV(img, &rgb);
+    avifRGBImageFreePixels(&rgb);
+    if (res != AVIF_RESULT_OK) { avifImageDestroy(img); return false; }
+
+    avifEncoder* encoder = avifEncoderCreate();
+    encoder->quality      = 80;
+    encoder->qualityAlpha = 100;  // AVIF_QUALITY_LOSSLESS
+    encoder->speed        = AVIF_SPEED_DEFAULT;
+
+    avifRWData output = AVIF_DATA_EMPTY;
+    res = avifEncoderWrite(encoder, img, &output);
+    avifEncoderDestroy(encoder);
+    avifImageDestroy(img);
+
+    bool ok = (res == AVIF_RESULT_OK) && output.size > 0
+           && WriteAllBytes(path, output.data, static_cast<DWORD>(output.size));
+    avifRWDataFree(&output);
+    return ok;
+}
+
+// ─── Ana kayıt dispatcher ──────────────────────────────────────────────────────
+
+bool SaveImage(const std::wstring& path, const std::wstring& format,
+               const uint8_t* bgraPreMul, UINT width, UINT height,
+               const std::wstring& sourcePath)
+{
+    if (!bgraPreMul || width == 0 || height == 0) return false;
+
+    // Pre-multiplied → düz alfa kopyası (orijinal tampon değişmez)
+    const UINT pixCount = width * height;
+    std::vector<uint8_t> straight(bgraPreMul, bgraPreMul + static_cast<size_t>(pixCount) * 4);
+    UnpremultiplyInPlace(straight.data(), pixCount);
+
+    const uint8_t* px = straight.data();
+    if (format == L"JPEG") return SaveImageWIC(path, GUID_ContainerFormatJpeg, px, width, height, sourcePath);
+    if (format == L"PNG")  return SaveImageWIC(path, GUID_ContainerFormatPng,  px, width, height);
+    if (format == L"BMP")  return SaveImageWIC(path, GUID_ContainerFormatBmp,  px, width, height);
+    if (format == L"TIFF" || format == L"TIF")
+                           return SaveImageWIC(path, GUID_ContainerFormatTiff, px, width, height, sourcePath);
+    if (format == L"WebP" || format == L"WEBP")
+                           return SaveImageWebP(path, px, width, height);
+    if (format == L"HEIC" || format == L"HEIF")
+                           return SaveImageHEIC(path, px, width, height);
+    if (format == L"JXL")  return SaveImageJXL(path,  px, width, height);
+    if (format == L"AVIF") return SaveImageAVIF(path, px, width, height);
+
+    // Bilinmeyen format → PNG olarak kaydet
+    return SaveImageWIC(path, GUID_ContainerFormatPng, px, width, height);
 }

@@ -119,6 +119,13 @@ struct ViewState
     bool  leftArrowPressed     = false;  // Sol ok basılı (press highlight)
     bool  rightArrowPressed    = false;  // Sağ ok basılı (press highlight)
     float panelScrollY         = 0.0f;  // Info paneli scroll ofseti (piksel, 0 = üst)
+
+    // Fotoğraf düzenleme durumu
+    bool  editDirty            = false;  // kaydedilmemiş değişiklik var — save bar gösterilir
+    bool  editIsAnimated       = false;  // animasyonlu görsel — düzenleme toolbar gizlenir
+    float editToolbarAlpha     = 0.0f;  // edit toolbar görünürlüğü (hover fade, 0=gizli 1=tam)
+    bool  editBtnRotLPressed   = false;  // ↺ (CCW) butonu basılı
+    bool  editBtnRotRPressed   = false;  // ↻ (CW)  butonu basılı
 };
 
 // Renderer: Direct2D render target yönetimi + WIC görüntü yükleme
@@ -186,9 +193,22 @@ public:
     int  AdvanceFrame();               // bir sonraki frame'e geç, yeni frame süresi (ms) döner
     int  GetCurrentFrameDuration() const;
 
+    // Edit toolbar — düzenleme butonları (Döndür CCW / CW)
+    D2D1_RECT_F GetEditBtnRotLRect()   const { return m_editBtnRotLRect; }
+    D2D1_RECT_F GetEditBtnRotRRect()   const { return m_editBtnRotRRect; }
+    bool        IsEditToolbarVisible() const { return m_editToolbarVisible; }
+
+    // Save bar — kayıt seçenekleri (Kaydet / Kaydetme / Ayrı Kaydet)
+    D2D1_RECT_F GetSaveBarSaveRect()    const { return m_saveBarSaveRect; }
+    D2D1_RECT_F GetSaveBarDiscardRect() const { return m_saveBarDiscardRect; }
+    D2D1_RECT_F GetSaveBarSaveAsRect()  const { return m_saveBarSaveAsRect; }
+    bool        IsSaveBarVisible()      const { return m_saveBarVisible; }
+
     // Thumbnail strip — main.cpp tarafından yönetilir
     void LoadThumbnail(const std::wstring& path, const uint8_t* pixels, UINT w, UINT h);
     bool HasThumbnail(const std::wstring& path) const;
+    // Thumbnail önbellekteyse ana bitmap olarak geçici göster — tam decode gelince otomatik değişir
+    bool ShowThumbnailAsPlaceholder(const std::wstring& path);
     void ClearThumbnails();
     // Hangi slot'ların gösterileceğini ayarla: paths[currentIdx] = mevcut görüntü
     void SetStripSlots(const std::vector<std::wstring>& paths, int currentIdx);
@@ -215,6 +235,9 @@ private:
     void DrawStripToggle(const ViewState& vs);
     // Harita önizleme çizimi — DrawInfoPanel içinden çağrılır
     void DrawMapPreview(float x0, float x1, float y, const ViewState& vs, const ImageInfo* info);
+    // Düzenleme toolbar ve save bar
+    void DrawEditToolbar(const ViewState& vs);
+    void DrawSaveBar(const ViewState& vs);
 
     HWND                   m_hwnd         = nullptr;
     ID2D1Factory*          m_factory      = nullptr;   // Direct2D fabrikası (cihazdan bağımsız)
@@ -227,6 +250,7 @@ private:
     IDWriteTextFormat*     m_valueFormat   = nullptr;  // 13 DIP Semi-Bold, left — panel değerler
     IDWriteTextFormat*     m_indexFormat   = nullptr;  // 14 DIP Semi-Bold, center — index bar
     IDWriteTextFormat*     m_toggleFormat  = nullptr;  // 10 DIP Regular,    center — time toggle pill
+    IDWriteTextFormat*     m_btnFormat     = nullptr;  // 13 DIP SemiBold,   center — save bar butonları
 
     // Fırçalar (cihaza bağlı, render target ile birlikte oluşturulur/yok edilir)
     ID2D1SolidColorBrush*  m_whiteBrush       = nullptr;   // Metin için
@@ -236,6 +260,7 @@ private:
     ID2D1SolidColorBrush*  m_grayBrush        = nullptr;   // #AAAAAA — etiket metni
     ID2D1SolidColorBrush*  m_panelBgBrush     = nullptr;   // #1A1A1A — panel arka planı
     ID2D1SolidColorBrush*  m_separatorBrush   = nullptr;   // #333333 — section ayraçlar + panel kenar
+    ID2D1SolidColorBrush*  m_saveBtnBrush     = nullptr;   // #4CAF50 — "Kaydet" butonu accent
 
     ID2D1Bitmap*           m_bitmap       = nullptr;   // GPU'ya yüklenmiş görüntü
     std::wstring           m_imagePath;                // D2DERR_RECREATE_TARGET'ta yeniden yüklemek için
@@ -282,6 +307,17 @@ private:
 
     // Info paneli içerik yüksekliği — DrawInfoPanel her çizimde hesaplar
     float       m_infoPanelContentH = 0.0f;
+
+    // Edit toolbar (döndür butonları) — her Render'da güncellenir
+    D2D1_RECT_F m_editBtnRotLRect    = {};
+    D2D1_RECT_F m_editBtnRotRRect    = {};
+    bool        m_editToolbarVisible = false;
+
+    // Save bar (kayıt seçenekleri) — her Render'da güncellenir
+    D2D1_RECT_F m_saveBarSaveRect    = {};
+    D2D1_RECT_F m_saveBarDiscardRect = {};
+    D2D1_RECT_F m_saveBarSaveAsRect  = {};
+    bool        m_saveBarVisible     = false;
 
 public:
     // Kaydırma sınırlaması için maksimum scroll hesabında kullanılır

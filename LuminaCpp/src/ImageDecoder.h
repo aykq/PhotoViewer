@@ -92,3 +92,13 @@ bool DecodePngToPixels(const uint8_t* pngBytes, size_t byteCount,
 bool ExtractHEICEmbeddedPreview(const std::wstring& path,
                                  std::vector<uint8_t>& pixelsOut,
                                  UINT& widthOut, UINT& heightOut);
+
+// Düzenlenmiş piksel buffer'ını dosyaya kaydeder (üzerine yazar).
+// format: DecodeOutput.format ile aynı — "JPEG", "PNG", "WebP", "HEIC", "JXL", "AVIF", "BMP", "TIFF"
+// bgraPreMul: BGRA pre-multiplied pikseller, width × height × 4 byte
+// sourcePath: EXIF/metadata kopyalamak için kaynak dosya yolu; boşsa metadata kopyalanmaz.
+//   JPEG ve TIFF için orijinal metadata blokları kopyalanır, Orientation=1'e sıfırlanır.
+// Başarılıysa true döner.
+bool SaveImage(const std::wstring& path, const std::wstring& format,
+               const uint8_t* bgraPreMul, UINT width, UINT height,
+               const std::wstring& sourcePath = L"");

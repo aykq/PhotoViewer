@@ -78,6 +78,18 @@ Renderer::Renderer(HWND hwnd) : m_hwnd(hwnd)
             m_toggleFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             m_toggleFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         }
+
+        // Save bar butonları: 13 DIP Semi-Bold, ortalı
+        m_dwriteFactory->CreateTextFormat(
+            L"Segoe UI", nullptr,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+            13.0f, L"", &m_btnFormat
+        );
+        if (m_btnFormat)
+        {
+            m_btnFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            m_btnFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
     }
 }
 
@@ -85,6 +97,7 @@ Renderer::~Renderer()
 {
     DiscardDeviceResources();
 
+    if (m_btnFormat)     { m_btnFormat->Release();     m_btnFormat = nullptr; }
     if (m_toggleFormat)  { m_toggleFormat->Release();  m_toggleFormat = nullptr; }
     if (m_indexFormat)   { m_indexFormat->Release();   m_indexFormat = nullptr; }
     if (m_valueFormat)   { m_valueFormat->Release();   m_valueFormat = nullptr; }
@@ -130,6 +143,9 @@ HRESULT Renderer::CreateDeviceResources()
     m_renderTarget->CreateSolidColorBrush(
         D2D1::ColorF(0.200f, 0.200f, 0.200f, 1.0f), &m_separatorBrush // #333333
     );
+    m_renderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(0.298f, 0.686f, 0.314f, 1.0f), &m_saveBtnBrush   // #4CAF50 — Kaydet
+    );
     return S_OK;
 }
 
@@ -150,6 +166,7 @@ void Renderer::DiscardDeviceResources()
     m_mapTileCache.clear();
 
     if (m_bitmap)           { m_bitmap->Release();           m_bitmap = nullptr; }
+    if (m_saveBtnBrush)     { m_saveBtnBrush->Release();     m_saveBtnBrush = nullptr; }
     if (m_separatorBrush)   { m_separatorBrush->Release();   m_separatorBrush = nullptr; }
     if (m_panelBgBrush)     { m_panelBgBrush->Release();     m_panelBgBrush = nullptr; }
     if (m_grayBrush)        { m_grayBrush->Release();        m_grayBrush = nullptr; }
@@ -292,6 +309,7 @@ void Renderer::DrawNavArrows(const ViewState& vs)
 void Renderer::DrawIndexBar(const ViewState& vs)
 {
     if (vs.imageTotal <= 0) return;
+    if (vs.editDirty) return;       // save bar açıkken index bar gizlenir
     if (vs.indexBarAlpha <= 0.01f) return;
     if (!m_indexFormat || !m_overlayBrush || !m_whiteBrush) return;
 
@@ -799,6 +817,8 @@ void Renderer::Render(const ViewState& vs, const ImageInfo* info)
     DrawStripToggle(vs);
     if (vs.panelAnimWidth > 0.0f) DrawInfoPanel(vs, info);
     DrawInfoButton(vs);  // Info panelinin üstünde çizilir
+    DrawEditToolbar(vs); // Görüntü üstü merkez — hover'da beliren döndür butonları
+    DrawSaveBar(vs);     // Alt orta — kaydedilmemiş değişiklik varsa görünür
 
     // Zoom indicator: sağ alt köşe (alpha fade)
     if (vs.zoomIndicatorAlpha > 0.01f && m_textFormat && m_whiteBrush && m_overlayBrush)
@@ -839,6 +859,212 @@ void Renderer::Render(const ViewState& vs, const ImageInfo* info)
 
     if (hr == D2DERR_RECREATE_TARGET)
         DiscardDeviceResources();
+}
+
+// ─── Edit Toolbar ─────────────────────────────────────────────────────────────
+// Görüntü üst kısmında merkeze hizalı floating toolbar.
+// Sadece statik (animasyonsuz) görsel yüklüyken çizilir.
+// editToolbarAlpha: hover fade tarafından kontrol edilir; editDirty=true → her zaman tam görünür.
+
+// Döndür ikon çizici — Direct2D path geometry kullanır (font bağımsız, her DPI'da temiz görünür).
+// cx,cy: buton merkezi; clockwise: saat yönü mu; strokeW: çizgi kalınlığı.
+static void DrawRotateIcon(ID2D1HwndRenderTarget* rt, ID2D1Factory* factory,
+                            ID2D1SolidColorBrush* brush, float cx, float cy,
+                            bool clockwise, float strokeW)
+{
+    constexpr float pi = 3.14159265358979f;
+    constexpr float R  = 10.0f;  // yay yarıçapı
+
+    // Saat açısı (0°=yukarı/12, saat yönünde artar).
+    // P(θ) = (cx + R·sin θ,  cy − R·cos θ)  — Y aşağı olan ekran koordinatı
+    auto clockPt = [&](float deg) -> D2D1_POINT_2F {
+        float r = deg * pi / 180.0f;
+        return { cx + R * sinf(r), cy - R * cosf(r) };
+    };
+
+    // Yay: 300° açıklık, 60°'lik boşluk üstte (330°–30° arası, 0°=12 saat)
+    // CW  →  30°'den 330°'ye saat yönünde (300° yay), ok başı 330°'de (sol üst, sağ-yukarı yönde)
+    // CCW → 330°'den  30°'ye saat yönü tersine (300° yay), ok başı 30°'de (sağ üst, sol-yukarı yönde)
+    // Böylece iki ikon birbirinin ayna görüntüsü olur; klasik ↺/↻ görünümüyle uyumlu.
+    const float arcStartDeg = clockwise ?  30.0f : 330.0f;
+    const float arcEndDeg   = clockwise ? 330.0f :  30.0f;
+
+    D2D1_POINT_2F startPt = clockPt(arcStartDeg);
+    D2D1_POINT_2F endPt   = clockPt(arcEndDeg);
+
+    ID2D1PathGeometry* arcGeo = nullptr;
+    factory->CreatePathGeometry(&arcGeo);
+    if (arcGeo)
+    {
+        ID2D1GeometrySink* sink = nullptr;
+        arcGeo->Open(&sink);
+        if (sink)
+        {
+            sink->BeginFigure(startPt, D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddArc(D2D1::ArcSegment(
+                endPt,
+                D2D1::SizeF(R, R),
+                0.0f,
+                clockwise ? D2D1_SWEEP_DIRECTION_CLOCKWISE
+                          : D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+                D2D1_ARC_SIZE_LARGE));  // 300° > 180° → büyük yay
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            sink->Close();
+            sink->Release();
+        }
+        rt->DrawGeometry(arcGeo, brush, strokeW);
+        arcGeo->Release();
+    }
+
+    // Ok başı — yay ucundaki tanjant yönünde dolu üçgen
+    // P(θ)'nin saat yönündeki tanjantı: dP/dθ = (R·cos θ, R·sin θ) → normalize → (cos θ, sin θ)
+    float endRad = arcEndDeg * pi / 180.0f;
+    float tx = clockwise ?  cosf(endRad) : -cosf(endRad);
+    float ty = clockwise ?  sinf(endRad) : -sinf(endRad);
+    float px = -ty, py = tx;  // dik yön
+
+    constexpr float arrowLen = 5.5f, arrowHW = 3.8f;
+    D2D1_POINT_2F tip   = { endPt.x + tx * arrowLen,     endPt.y + ty * arrowLen };
+    D2D1_POINT_2F baseL = { endPt.x + px * arrowHW,      endPt.y + py * arrowHW };
+    D2D1_POINT_2F baseR = { endPt.x - px * arrowHW,      endPt.y - py * arrowHW };
+
+    ID2D1PathGeometry* arrowGeo = nullptr;
+    factory->CreatePathGeometry(&arrowGeo);
+    if (arrowGeo)
+    {
+        ID2D1GeometrySink* arrowSink = nullptr;
+        arrowGeo->Open(&arrowSink);
+        if (arrowSink)
+        {
+            arrowSink->BeginFigure(tip, D2D1_FIGURE_BEGIN_FILLED);
+            arrowSink->AddLine(baseL);
+            arrowSink->AddLine(baseR);
+            arrowSink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            arrowSink->Close();
+            arrowSink->Release();
+        }
+        rt->FillGeometry(arrowGeo, brush);
+        arrowGeo->Release();
+    }
+}
+
+void Renderer::DrawEditToolbar(const ViewState& vs)
+{
+    m_editToolbarVisible = false;
+    if (vs.editIsAnimated) return;
+    if (!m_bitmap) return;           // statik görsel yok
+
+    float alpha = vs.editDirty ? 1.0f : vs.editToolbarAlpha;
+    if (alpha <= 0.01f) return;
+
+    if (!m_panelBgBrush || !m_whiteBrush || !m_activeBrush) return;
+
+    m_editToolbarVisible = true;
+
+    D2D1_SIZE_F sz     = m_renderTarget->GetSize();
+    float availW       = sz.width - vs.panelAnimWidth;
+
+    constexpr float kBtnSize   = 40.0f;
+    constexpr float kBtnRadius = 8.0f;
+    constexpr float kGap       = 8.0f;
+    constexpr float kMarginTop = 16.0f;
+    constexpr float kStrokeW   = 2.2f;
+
+    const float totalW = kBtnSize * 2.0f + kGap;
+    const float startX = (availW - totalW) * 0.5f;
+    const float btnY   = kMarginTop;
+
+    // Geçici alpha uygulaması
+    float savedPanelOp  = m_panelBgBrush->GetOpacity();
+    float savedWhiteOp  = m_whiteBrush->GetOpacity();
+    float savedActiveOp = m_activeBrush->GetOpacity();
+    m_panelBgBrush->SetOpacity(savedPanelOp  * alpha);
+    m_whiteBrush->SetOpacity(savedWhiteOp   * alpha);
+    m_activeBrush->SetOpacity(savedActiveOp * alpha);
+
+    // ↺ Döndür CCW — sol buton
+    m_editBtnRotLRect = D2D1::RectF(startX, btnY, startX + kBtnSize, btnY + kBtnSize);
+    {
+        D2D1_ROUNDED_RECT rr = { m_editBtnRotLRect, kBtnRadius, kBtnRadius };
+        m_renderTarget->FillRoundedRectangle(rr,
+            vs.editBtnRotLPressed ? m_activeBrush : m_panelBgBrush);
+        float cx = startX + kBtnSize * 0.5f;
+        float cy = btnY   + kBtnSize * 0.5f;
+        DrawRotateIcon(m_renderTarget, m_factory, m_whiteBrush, cx, cy, false, kStrokeW);
+    }
+
+    // ↻ Döndür CW — sağ buton
+    const float btn2X = startX + kBtnSize + kGap;
+    m_editBtnRotRRect = D2D1::RectF(btn2X, btnY, btn2X + kBtnSize, btnY + kBtnSize);
+    {
+        D2D1_ROUNDED_RECT rr = { m_editBtnRotRRect, kBtnRadius, kBtnRadius };
+        m_renderTarget->FillRoundedRectangle(rr,
+            vs.editBtnRotRPressed ? m_activeBrush : m_panelBgBrush);
+        float cx = btn2X + kBtnSize * 0.5f;
+        float cy = btnY  + kBtnSize * 0.5f;
+        DrawRotateIcon(m_renderTarget, m_factory, m_whiteBrush, cx, cy, true, kStrokeW);
+    }
+
+    m_panelBgBrush->SetOpacity(savedPanelOp);
+    m_whiteBrush->SetOpacity(savedWhiteOp);
+    m_activeBrush->SetOpacity(savedActiveOp);
+}
+
+// ─── Save Bar ─────────────────────────────────────────────────────────────────
+// Kaydedilmemiş değişiklik olduğunda görüntünün altında (filmstrip üstünde) çizilir.
+// 3 buton: Kaydet (yeşil) | Kaydetme (nötr) | Ayrı Kaydet (nötr)
+
+void Renderer::DrawSaveBar(const ViewState& vs)
+{
+    m_saveBarVisible = false;
+    if (!vs.editDirty) return;
+    if (!m_panelBgBrush || !m_whiteBrush || !m_separatorBrush || !m_saveBtnBrush
+     || !m_btnFormat) return;
+
+    m_saveBarVisible = true;
+
+    D2D1_SIZE_F sz = m_renderTarget->GetSize();
+    float availW   = sz.width - vs.panelAnimWidth;
+
+    constexpr float kBarW  = 320.0f;
+    constexpr float kBarH  = 52.0f;
+    constexpr float kRadii = 10.0f;
+    constexpr float kPadX  = 10.0f;
+    constexpr float kBtnH  = 34.0f;
+    constexpr float kGap   =  6.0f;
+
+    const float barBottom = sz.height - vs.stripAnimHeight - 16.0f;
+    const float barTop    = barBottom - kBarH;
+    const float barLeft   = (availW - kBarW) * 0.5f;
+    const float barRight  = barLeft + kBarW;
+
+    // Bar arka planı
+    D2D1_ROUNDED_RECT barRR = {
+        D2D1::RectF(barLeft, barTop, barRight, barBottom), kRadii, kRadii
+    };
+    m_renderTarget->FillRoundedRectangle(barRR, m_panelBgBrush);
+    m_renderTarget->DrawRoundedRectangle(barRR, m_separatorBrush, 1.0f);
+
+    // 3 eşit buton
+    const float contentW = kBarW - 2.0f * kPadX;
+    const float btnW     = (contentW - 2.0f * kGap) / 3.0f;
+    const float btnTop   = barTop + (kBarH - kBtnH) * 0.5f;
+
+    float bx = barLeft + kPadX;
+
+    auto DrawBtn = [&](ID2D1SolidColorBrush* bg, const wchar_t* label, D2D1_RECT_F& outRect)
+    {
+        outRect = D2D1::RectF(bx, btnTop, bx + btnW, btnTop + kBtnH);
+        D2D1_ROUNDED_RECT rr = { outRect, 6.0f, 6.0f };
+        m_renderTarget->FillRoundedRectangle(rr, bg);
+        m_renderTarget->DrawText(label, static_cast<UINT32>(wcslen(label)),
+                                  m_btnFormat, outRect, m_whiteBrush);
+        bx += btnW + kGap;
+    };
+
+    DrawBtn(m_saveBtnBrush,    L"Kaydet",       m_saveBarSaveRect);
+    DrawBtn(m_separatorBrush,  L"Kaydetme",     m_saveBarDiscardRect);
+    DrawBtn(m_overlayBrush,    L"Ayr\u0131 Kaydet",  m_saveBarSaveAsRect);
 }
 
 void Renderer::Resize(UINT width, UINT height)
@@ -891,6 +1117,18 @@ void Renderer::LoadThumbnail(const std::wstring& path, const uint8_t* pixels, UI
 bool Renderer::HasThumbnail(const std::wstring& path) const
 {
     return m_thumbCache.count(path) > 0;
+}
+
+bool Renderer::ShowThumbnailAsPlaceholder(const std::wstring& path)
+{
+    auto it = m_thumbCache.find(path);
+    if (it == m_thumbCache.end() || !it->second) return false;
+
+    if (m_bitmap) { m_bitmap->Release(); m_bitmap = nullptr; }
+    it->second->AddRef();
+    m_bitmap    = it->second;
+    m_imagePath = path;
+    return true;
 }
 
 void Renderer::ClearThumbnails()

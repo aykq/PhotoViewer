@@ -5,6 +5,8 @@
 #pragma comment(lib, "winmm.lib")
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
+#include <commdlg.h>
+#pragma comment(lib, "comdlg32.lib")
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -31,6 +33,7 @@ static constexpr UINT     WM_THUMB_DONE         = WM_APP + 3;
 static constexpr UINT     WM_META_DONE          = WM_APP + 4;  // hızlı metadata aşaması
 static constexpr UINT     WM_LOCATION_DONE      = WM_APP + 5;  // Nominatim sonucu
 static constexpr UINT     WM_PREVIEW_DONE       = WM_APP + 6;  // HEIC gömülü thumbnail
+static constexpr UINT     WM_SAVE_DONE          = WM_APP + 7;  // arka plan kayıt tamamlandı
 static constexpr UINT_PTR kZoomIndicatorTimerID = 1;
 static constexpr UINT_PTR kPanelAnimTimerID     = 2;
 static constexpr UINT_PTR kAnimTimerID          = 3;
@@ -40,6 +43,8 @@ static constexpr UINT_PTR kIndexIdleTimerID     = 6;  // 1.5s hareketsizlik → 
 static constexpr UINT_PTR kIndexFadeTimerID     = 7;  // index bar alpha animasyonu
 static constexpr UINT_PTR kZoomFadeTimerID      = 8;  // zoom indicator alpha animasyonu
 static constexpr UINT_PTR kCopyFeedbackTimerID  = 9;  // 1.5s kopyala feedback sıfırlama
+static constexpr UINT_PTR kEditToolbarIdleTimerID = 10; // 2s hareketsizlik → edit toolbar fade başlar
+static constexpr UINT_PTR kEditToolbarFadeTimerID = 11; // edit toolbar alpha animasyonu
 
 // Animasyon timer aralığı — 7ms ≈ 143fps (timeBeginPeriod(1) ile hassas çalışır)
 static constexpr UINT     kAnimIntervalMs       = 7;
@@ -56,7 +61,8 @@ static LARGE_INTEGER      g_panelAnimLastTime   = {};
 static LARGE_INTEGER      g_zoomAnimLastTime    = {};
 static LARGE_INTEGER      g_stripAnimLastTime   = {};
 static LARGE_INTEGER      g_indexFadeLastTime   = {};
-static LARGE_INTEGER      g_zoomFadeLastTime    = {};
+static LARGE_INTEGER      g_zoomFadeLastTime           = {};
+static LARGE_INTEGER      g_editToolbarFadeLastTime    = {};
 
 // --- Arka plan decode ---
 
@@ -93,6 +99,28 @@ struct PreviewResult
     UINT     width      = 0;
     UINT     height     = 0;
     uint64_t generation = 0;
+};
+
+// Düzenleme durumu — decode sonucunun düzenlenebilir kopyası (UI thread'e özel)
+struct EditState
+{
+    std::vector<uint8_t> pixels;    // BGRA pre-multiplied, güncel düzenlenmiş piksel
+    UINT         width    = 0;
+    UINT         height   = 0;
+    bool         isDirty  = false;  // kaydedilmemiş değişiklik var
+    std::wstring filePath;          // kayıt hedefi
+    std::wstring format;            // "JPEG", "PNG" vb.
+};
+static EditState g_edit;
+static std::atomic<bool> g_isSaving{false};  // arka plan kayıt devam ediyor mu
+
+struct SaveDoneResult
+{
+    bool         success   = false;
+    bool         isSaveAs  = false;
+    std::wstring savedPath;    // kaydedilen yol
+    std::wstring format;       // kullanılan format
+    std::wstring origPath;     // SaveAs öncesi orijinal yol (cache eviction için)
 };
 
 static std::atomic<uint64_t> g_decodeGeneration{0};
@@ -379,6 +407,9 @@ static bool  g_clickIsLeft       = false;
 static bool  g_clickIsInfoButton = false;
 static bool  g_clickInPanel      = false;  // Panel alanı tıklaması — drag/zoom engellenir
 static bool  g_clickInStrip      = false;  // Strip veya toggle tıklaması
+static bool  g_mouseTracking     = false;  // TrackMouseEvent kaydı aktif mi
+static bool  g_clickInToolbar    = false;  // Edit toolbar butonu tıklaması
+static bool  g_clickInSaveBar    = false;  // Save bar butonu tıklaması
 
 
 // --- Yardımcı: arrow zone hit-test ---
@@ -572,6 +603,34 @@ static void ApplyDecodeResult(HWND hwnd, DecodeResult* result)
         }
     }
     g_imageInfo = result->info;
+
+    // Edit state güncelle — animasyonlu görüntüler düzenlenemez
+    if (!result->frames.empty())
+    {
+        g_viewState.editIsAnimated = true;
+        g_edit.pixels.clear();
+        g_edit.width  = 0;
+        g_edit.height = 0;
+    }
+    else if (!result->pixels.empty())
+    {
+        g_viewState.editIsAnimated = false;
+        g_edit.pixels  = result->pixels;
+        g_edit.width   = result->width;
+        g_edit.height  = result->height;
+    }
+    else
+    {
+        g_viewState.editIsAnimated = false;
+        g_edit.pixels.clear();
+        g_edit.width  = 0;
+        g_edit.height = 0;
+    }
+    g_edit.filePath = result->path;
+    g_edit.format   = result->info.format;
+    g_edit.isDirty  = false;
+    g_viewState.editDirty = false;
+
     ResetIndexIdleTimer(hwnd);
     InvalidateRect(hwnd, nullptr, FALSE);
 }
@@ -636,7 +695,9 @@ static void StartThumbDecode(HWND hwnd, const std::wstring& path, uint64_t cance
 
         CoUninitialize();
 
-        if (g_thumbCancel.load() != cancelToken) return;
+        // END token kontrolü kaldırıldı: HEIC gibi yavaş formatlarda navigasyon
+        // sırasında g_thumbCancel değişir ve sonuç atılır; filmstrip kalıcı siyah kalır.
+        // Sonuç her zaman iletilir — WM_THUMB_DONE tarafında LRU cache sınırlar.
         if (!ok || pixels.empty()) return;
 
         auto* result        = new ThumbResult();
@@ -758,6 +819,15 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
     ++g_tileCancel;   // Eski tile fetch thread'lerini iptal et
     if (g_renderer) g_renderer->ClearMapTiles();  // Önceki görüntünün tile'larını temizle
 
+    // Edit durumunu temizle — navigasyonda kaydedilmemiş değişiklikler atılır
+    g_edit.isDirty             = false;
+    g_edit.pixels.clear();
+    g_viewState.editDirty      = false;
+    g_viewState.editIsAnimated = false;
+    g_viewState.editToolbarAlpha = 0.0f;
+    KillTimer(hwnd, kEditToolbarIdleTimerID);
+    KillTimer(hwnd, kEditToolbarFadeTimerID);
+
     bool  keepPanel      = g_viewState.showInfoPanel;
     float keepAnimWidth  = g_viewState.panelAnimWidth;
     bool  keep12h        = g_viewState.use12HourTime;
@@ -839,6 +909,11 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
     UpdateStripSlots();
     TriggerThumbFetches(hwnd);
     StartDecode(hwnd, path);
+    // Filmstrip thumbnail varsa geçici önizleme olarak göster — tam decode gelince değişir.
+    // HEIC istisnası kaldırıldı: gömülü thumbnail'i olmayan eski Lumina-düzenli HEIC'lerde
+    // önizleme gösterilmezdi; ekranda 2 saniye önceki fotoğraf kalıyordu.
+    if (g_renderer && g_renderer->HasThumbnail(path))
+        g_renderer->ShowThumbnailAsPlaceholder(path);
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -878,6 +953,189 @@ static void ShowZoomIndicator(HWND hwnd)
     KillTimer(hwnd, kZoomFadeTimerID);
     KillTimer(hwnd, kZoomIndicatorTimerID);
     SetTimer(hwnd, kZoomIndicatorTimerID, 1500, nullptr);
+}
+
+// --- Piksel döndürme ---
+
+// 90° saat yönünde: new(nx,ny) = old(col=ny, row=H-1-nx); yeni W=eskiH, yeni H=eskiW
+static void RotatePixels90CW(std::vector<uint8_t>& pixels, UINT& width, UINT& height)
+{
+    const UINT newW = height, newH = width;
+    std::vector<uint8_t> dst(static_cast<size_t>(newW) * newH * 4);
+    for (UINT ny = 0; ny < newH; ++ny)
+        for (UINT nx = 0; nx < newW; ++nx)
+        {
+            const uint8_t* src = &pixels[((height - 1 - nx) * width + ny) * 4];
+            uint8_t* d = &dst[(ny * newW + nx) * 4];
+            d[0] = src[0]; d[1] = src[1]; d[2] = src[2]; d[3] = src[3];
+        }
+    pixels = std::move(dst);
+    width  = newW;
+    height = newH;
+}
+
+// 90° saat yönü tersine: new(nx,ny) = old(col=W-1-ny, row=nx); yeni W=eskiH, yeni H=eskiW
+static void RotatePixels90CCW(std::vector<uint8_t>& pixels, UINT& width, UINT& height)
+{
+    const UINT newW = height, newH = width;
+    std::vector<uint8_t> dst(static_cast<size_t>(newW) * newH * 4);
+    for (UINT ny = 0; ny < newH; ++ny)
+        for (UINT nx = 0; nx < newW; ++nx)
+        {
+            const uint8_t* src = &pixels[(nx * width + (width - 1 - ny)) * 4];
+            uint8_t* d = &dst[(ny * newW + nx) * 4];
+            d[0] = src[0]; d[1] = src[1]; d[2] = src[2]; d[3] = src[3];
+        }
+    pixels = std::move(dst);
+    width  = newW;
+    height = newH;
+}
+
+// --- Dosya yardımcıları ---
+
+static std::wstring GetFormatFromPath(const std::wstring& path)
+{
+    auto dot = path.rfind(L'.');
+    if (dot == std::wstring::npos) return L"JPEG";
+    std::wstring ext = path.substr(dot + 1);
+    for (auto& c : ext) c = towupper(c);
+    if (ext == L"JPG" || ext == L"JPEG") return L"JPEG";
+    if (ext == L"PNG")                   return L"PNG";
+    if (ext == L"BMP")                   return L"BMP";
+    if (ext == L"TIFF" || ext == L"TIF") return L"TIFF";
+    if (ext == L"WEBP")                  return L"WebP";
+    if (ext == L"HEIC" || ext == L"HEIF") return L"HEIC";
+    if (ext == L"JXL")                   return L"JXL";
+    if (ext == L"AVIF")                  return L"AVIF";
+    return L"JPEG";
+}
+
+static std::wstring ShowSaveAsDialog(HWND hwnd, const std::wstring& currentPath)
+{
+    wchar_t buf[MAX_PATH] = {};
+    if (!currentPath.empty())
+        wcsncpy_s(buf, currentPath.c_str(), MAX_PATH - 1);
+
+    OPENFILENAMEW ofn    = {};
+    ofn.lStructSize      = sizeof(ofn);
+    ofn.hwndOwner        = hwnd;
+    ofn.lpstrFile        = buf;
+    ofn.nMaxFile         = MAX_PATH;
+    ofn.lpstrFilter      = L"JPEG\0*.jpg;*.jpeg\0PNG\0*.png\0WebP\0*.webp\0"
+                           L"BMP\0*.bmp\0TIFF\0*.tiff;*.tif\0JXL\0*.jxl\0AVIF\0*.avif\0\0";
+    ofn.Flags            = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+
+    return GetSaveFileNameW(&ofn) ? buf : L"";
+}
+
+// --- Edit eylem yardımcıları ---
+
+// Ortak: düzenlenmiş piksel buffer'ını renderer'a yükler, zoom/pan sıfırlar
+static void DoApplyEdit(HWND hwnd)
+{
+    if (g_renderer)
+        g_renderer->LoadImageFromPixels(
+            g_edit.pixels.data(), g_edit.width, g_edit.height, g_edit.filePath);
+    g_viewState.zoomFactor = g_viewState.zoomTarget = 1.0f;
+    g_viewState.panX = g_viewState.panXTarget = 0.0f;
+    g_viewState.panY = g_viewState.panYTarget = 0.0f;
+    KillTimer(hwnd, kZoomAnimTimerID);
+}
+
+static void DoRotateCW(HWND hwnd)
+{
+    if (g_edit.pixels.empty() || g_viewState.editIsAnimated) return;
+    if (g_isSaving.load()) return;  // kayıt devam ederken döndürme engellenir
+    RotatePixels90CW(g_edit.pixels, g_edit.width, g_edit.height);
+    g_edit.isDirty         = true;
+    g_viewState.editDirty  = true;
+    g_viewState.editToolbarAlpha = 1.0f;
+    KillTimer(hwnd, kEditToolbarFadeTimerID);
+    KillTimer(hwnd, kEditToolbarIdleTimerID);
+    DoApplyEdit(hwnd);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void DoRotateCCW(HWND hwnd)
+{
+    if (g_edit.pixels.empty() || g_viewState.editIsAnimated) return;
+    if (g_isSaving.load()) return;  // kayıt devam ederken döndürme engellenir
+    RotatePixels90CCW(g_edit.pixels, g_edit.width, g_edit.height);
+    g_edit.isDirty         = true;
+    g_viewState.editDirty  = true;
+    g_viewState.editToolbarAlpha = 1.0f;
+    KillTimer(hwnd, kEditToolbarFadeTimerID);
+    KillTimer(hwnd, kEditToolbarIdleTimerID);
+    DoApplyEdit(hwnd);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void DoDiscard(HWND hwnd)
+{
+    if (!g_edit.isDirty) return;
+    g_edit.isDirty         = false;
+    g_viewState.editDirty  = false;
+    g_viewState.editToolbarAlpha = 1.0f;
+    KillTimer(hwnd, kEditToolbarFadeTimerID);
+    KillTimer(hwnd, kEditToolbarIdleTimerID);
+    SetTimer(hwnd, kEditToolbarIdleTimerID, 2000, nullptr);
+    // Orijinali yeniden decode et; WM_DECODE_DONE g_edit'i temizlenmiş pikselle yeniler
+    g_viewState.zoomFactor = g_viewState.zoomTarget = 1.0f;
+    g_viewState.panX = g_viewState.panXTarget = 0.0f;
+    g_viewState.panY = g_viewState.panYTarget = 0.0f;
+    KillTimer(hwnd, kZoomAnimTimerID);
+    StartDecode(hwnd, g_edit.filePath);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void DoSave(HWND hwnd)
+{
+    if (!g_edit.isDirty || g_edit.pixels.empty()) return;
+    if (g_isSaving.load()) return;
+
+    g_isSaving.store(true);
+    auto* r    = new SaveDoneResult();
+    r->isSaveAs  = false;
+    r->savedPath = g_edit.filePath;
+    r->origPath  = g_edit.filePath;
+    r->format    = g_edit.format;
+
+    // Arka plan kayıt: pikselleri kopyala, UI thread bloklanmaz
+    auto pixels = g_edit.pixels;
+    UINT w = g_edit.width, h = g_edit.height;
+    std::thread([hwnd, r, pixels = std::move(pixels), w, h]() mutable {
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        r->success = SaveImage(r->savedPath, r->format, pixels.data(), w, h, r->origPath);
+        CoUninitialize();
+        PostMessage(hwnd, WM_SAVE_DONE, 0, reinterpret_cast<LPARAM>(r));
+    }).detach();
+}
+
+static void DoSaveAs(HWND hwnd)
+{
+    if (!g_edit.isDirty || g_edit.pixels.empty()) return;
+    if (g_isSaving.load()) return;
+
+    std::wstring newPath = ShowSaveAsDialog(hwnd, g_edit.filePath);
+    if (newPath.empty()) return;
+    std::wstring fmt = GetFormatFromPath(newPath);
+
+    g_isSaving.store(true);
+    auto* r    = new SaveDoneResult();
+    r->isSaveAs  = true;
+    r->savedPath = newPath;
+    r->origPath  = g_edit.filePath;
+    r->format    = fmt;
+
+    auto pixels   = g_edit.pixels;
+    UINT w = g_edit.width, h = g_edit.height;
+    std::wstring srcPath = g_edit.filePath;
+    std::thread([hwnd, r, pixels = std::move(pixels), w, h, srcPath]() mutable {
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        r->success = SaveImage(r->savedPath, r->format, pixels.data(), w, h, srcPath);
+        CoUninitialize();
+        PostMessage(hwnd, WM_SAVE_DONE, 0, reinterpret_cast<LPARAM>(r));
+    }).detach();
 }
 
 // --- Tema yardımcıları ---
@@ -1002,6 +1260,40 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         if (!g_clickIsInfoButton)
         {
+            // Edit toolbar butonu tıklaması
+            if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
+            {
+                D2D1_RECT_F rL = g_renderer->GetEditBtnRotLRect();
+                D2D1_RECT_F rR = g_renderer->GetEditBtnRotRRect();
+                bool hitL = (mx >= rL.left && mx <= rL.right && my >= rL.top && my <= rL.bottom);
+                bool hitR = (mx >= rR.left && mx <= rR.right && my >= rR.top && my <= rR.bottom);
+                if (hitL || hitR)
+                {
+                    g_clickInToolbar = true;
+                    g_viewState.editBtnRotLPressed = hitL;
+                    g_viewState.editBtnRotRPressed = hitR;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // Save bar butonu tıklaması
+            if (g_renderer && g_renderer->IsSaveBarVisible() && g_viewState.editDirty)
+            {
+                D2D1_RECT_F rSave    = g_renderer->GetSaveBarSaveRect();
+                D2D1_RECT_F rDiscard = g_renderer->GetSaveBarDiscardRect();
+                D2D1_RECT_F rSaveAs  = g_renderer->GetSaveBarSaveAsRect();
+                bool hitSave    = (mx >= rSave.left    && mx <= rSave.right    && my >= rSave.top    && my <= rSave.bottom);
+                bool hitDiscard = (mx >= rDiscard.left && mx <= rDiscard.right && my >= rDiscard.top && my <= rDiscard.bottom);
+                bool hitSaveAs  = (mx >= rSaveAs.left  && mx <= rSaveAs.right  && my >= rSaveAs.top  && my <= rSaveAs.bottom);
+                if (hitSave || hitDiscard || hitSaveAs)
+                {
+                    g_clickInSaveBar = true;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             // Strip toggle pill tıklaması (strip alanının dışında olabilir)
             if (g_renderer && g_renderer->IsStripToggleVisible())
             {
@@ -1065,6 +1357,28 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float mx = static_cast<float>(GET_X_LPARAM(lParam));
         float my = static_cast<float>(GET_Y_LPARAM(lParam));
 
+        // Edit toolbar hover — düzenlenebilir statik görüntü varsa toolbar göster
+        if (!g_viewState.editIsAnimated && !g_edit.pixels.empty())
+        {
+            if (!g_mouseTracking)
+            {
+                TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+                TrackMouseEvent(&tme);
+                g_mouseTracking = true;
+            }
+            if (!g_viewState.editDirty)
+            {
+                KillTimer(hwnd, kEditToolbarFadeTimerID);
+                KillTimer(hwnd, kEditToolbarIdleTimerID);
+                SetTimer(hwnd, kEditToolbarIdleTimerID, 2000, nullptr);
+            }
+            if (g_viewState.editToolbarAlpha < 1.0f)
+            {
+                g_viewState.editToolbarAlpha = 1.0f;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+        }
+
         if (!g_dragging) return 0;
         float nx = g_panAtDragStartX + (mx - g_dragStartX);
         float ny = g_panAtDragStartY + (my - g_dragStartY);
@@ -1074,6 +1388,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
 
+    case WM_MOUSELEAVE:
+        g_mouseTracking = false;
+        if (!g_viewState.editDirty && g_viewState.editToolbarAlpha > 0.0f)
+        {
+            KillTimer(hwnd, kEditToolbarIdleTimerID);
+            QueryPerformanceCounter(&g_editToolbarFadeLastTime);
+            SetTimer(hwnd, kEditToolbarFadeTimerID, kAnimIntervalMs, nullptr);
+        }
+        return 0;
+
     case WM_LBUTTONUP:
     {
         float mx = static_cast<float>(GET_X_LPARAM(lParam));
@@ -1082,6 +1406,47 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         bool wasDragging = g_dragging;
         g_dragging = false;
         ReleaseCapture();
+
+        // Edit toolbar butonu tıklaması
+        if (g_clickInToolbar)
+        {
+            bool wasL = g_viewState.editBtnRotLPressed;
+            bool wasR = g_viewState.editBtnRotRPressed;
+            g_viewState.editBtnRotLPressed = false;
+            g_viewState.editBtnRotRPressed = false;
+            g_clickInToolbar = false;
+            float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
+            if (delta < 5.0f)
+            {
+                if (wasL) DoRotateCCW(hwnd);
+                else if (wasR) DoRotateCW(hwnd);
+            }
+            else
+                InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        // Save bar butonu tıklaması
+        if (g_clickInSaveBar)
+        {
+            g_clickInSaveBar = false;
+            float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
+            if (delta < 5.0f && g_renderer)
+            {
+                D2D1_RECT_F rSave    = g_renderer->GetSaveBarSaveRect();
+                D2D1_RECT_F rDiscard = g_renderer->GetSaveBarDiscardRect();
+                D2D1_RECT_F rSaveAs  = g_renderer->GetSaveBarSaveAsRect();
+                if (mx >= rSave.left && mx <= rSave.right && my >= rSave.top && my <= rSave.bottom)
+                    DoSave(hwnd);
+                else if (mx >= rDiscard.left && mx <= rDiscard.right && my >= rDiscard.top && my <= rDiscard.bottom)
+                    DoDiscard(hwnd);
+                else if (mx >= rSaveAs.left && mx <= rSaveAs.right && my >= rSaveAs.top && my <= rSaveAs.bottom)
+                    DoSaveAs(hwnd);
+            }
+            else
+                InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
 
         // Press highlight'ları her durumda temizle
         bool needRepaint = g_viewState.infoBtnPressed
@@ -1248,6 +1613,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float cx = static_cast<float>(GET_X_LPARAM(lParam));
         float cy = static_cast<float>(GET_Y_LPARAM(lParam));
 
+        // Edit toolbar butonlarında çift tıklamayı engelle — hızlı ardışık döndürme desteği
+        if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
+        {
+            D2D1_RECT_F rL = g_renderer->GetEditBtnRotLRect();
+            D2D1_RECT_F rR = g_renderer->GetEditBtnRotRRect();
+            if ((cx >= rL.left && cx <= rL.right && cy >= rL.top && cy <= rL.bottom) ||
+                (cx >= rR.left && cx <= rR.right && cy >= rR.top && cy <= rR.bottom))
+            {
+                // İkinci tık: LBUTTONDOWN gibi işle — hemen döndür
+                if (cx >= rL.left && cx <= rL.right && cy >= rL.top && cy <= rL.bottom)
+                    DoRotateCCW(hwnd);
+                else
+                    DoRotateCW(hwnd);
+                return 0;
+            }
+        }
+
+        // Save bar butonlarında çift tıklamayı engelle
+        if (g_renderer && g_renderer->IsSaveBarVisible() && g_viewState.editDirty)
+        {
+            D2D1_RECT_F rSave    = g_renderer->GetSaveBarSaveRect();
+            D2D1_RECT_F rDiscard = g_renderer->GetSaveBarDiscardRect();
+            D2D1_RECT_F rSaveAs  = g_renderer->GetSaveBarSaveAsRect();
+            if ((cx >= rSave.left    && cx <= rSave.right    && cy >= rSave.top    && cy <= rSave.bottom)    ||
+                (cx >= rDiscard.left && cx <= rDiscard.right && cy >= rDiscard.top && cy <= rDiscard.bottom) ||
+                (cx >= rSaveAs.left  && cx <= rSaveAs.right  && cy >= rSaveAs.top  && cy <= rSaveAs.bottom))
+                return 0;
+        }
+
         // Ok zone'da çift tıklamayı engelle — navigasyon zaten birinci LBUTTONUP'ta gerçekleşti
         if (HitTestArrow(hwnd, cx, cy, g_viewState.panelAnimWidth) != ArrowZone::None)
             return 0;
@@ -1355,13 +1749,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             break;
 
         case VK_LEFT:
-            if (g_navigator && !g_navigator->empty())
+            if (GetKeyState(VK_CONTROL) & 0x8000)
+                DoRotateCCW(hwnd);
+            else if (g_navigator && !g_navigator->empty())
                 NavigateTo(hwnd, g_navigator->prev());
             break;
 
         case VK_RIGHT:
-            if (g_navigator && !g_navigator->empty())
+            if (GetKeyState(VK_CONTROL) & 0x8000)
+                DoRotateCW(hwnd);
+            else if (g_navigator && !g_navigator->empty())
                 NavigateTo(hwnd, g_navigator->next());
+            break;
+
+        case VK_OEM_4:  // '[' — 90° sola döndür
+            DoRotateCCW(hwnd);
+            break;
+
+        case VK_OEM_6:  // ']' — 90° sağa döndür
+            DoRotateCW(hwnd);
             break;
         }
         return 0;
@@ -1509,7 +1915,111 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             KillTimer(hwnd, kCopyFeedbackTimerID);
             InvalidateRect(hwnd, nullptr, FALSE);
         }
+        else if (wParam == kEditToolbarIdleTimerID)
+        {
+            // 2s hareketsizlik doldu — fade animasyonunu başlat (sadece dirty değilse)
+            KillTimer(hwnd, kEditToolbarIdleTimerID);
+            if (!g_viewState.editDirty)
+            {
+                QueryPerformanceCounter(&g_editToolbarFadeLastTime);
+                SetTimer(hwnd, kEditToolbarFadeTimerID, kAnimIntervalMs, nullptr);
+            }
+        }
+        else if (wParam == kEditToolbarFadeTimerID)
+        {
+            if (g_viewState.editDirty)
+            {
+                // Dirty modda toolbar kalıcı görünür — fade iptal
+                KillTimer(hwnd, kEditToolbarFadeTimerID);
+                return 0;
+            }
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            float dt = static_cast<float>(now.QuadPart - g_editToolbarFadeLastTime.QuadPart)
+                       / static_cast<float>(g_qpcFreq.QuadPart);
+            g_editToolbarFadeLastTime = now;
+            dt = min(dt, 0.1f);
+
+            constexpr float kFadeSpeed = 2.0f;
+            g_viewState.editToolbarAlpha -= dt * kFadeSpeed;
+            if (g_viewState.editToolbarAlpha <= 0.0f)
+            {
+                g_viewState.editToolbarAlpha = 0.0f;
+                KillTimer(hwnd, kEditToolbarFadeTimerID);
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
         return 0;
+
+    case WM_SAVE_DONE:
+    {
+        auto* r = reinterpret_cast<SaveDoneResult*>(lParam);
+        g_isSaving.store(false);
+
+        if (r->success)
+        {
+            if (r->isSaveAs) {
+                g_edit.filePath = r->savedPath;
+                g_edit.format   = r->format;
+            }
+            g_edit.isDirty        = false;
+            g_viewState.editDirty = false;
+            g_viewState.editToolbarAlpha = 1.0f;
+            KillTimer(hwnd, kEditToolbarFadeTimerID);
+            KillTimer(hwnd, kEditToolbarIdleTimerID);
+            SetTimer(hwnd, kEditToolbarIdleTimerID, 2000, nullptr);
+
+            // Prefetch cache'i güncelle: eski girdi temizle, düzenlenmiş pikselleri ekle
+            {
+                std::lock_guard<std::mutex> lk(g_cacheMutex);
+                g_decodeCache.erase(r->savedPath);
+                if (r->isSaveAs && r->origPath != r->savedPath)
+                    g_decodeCache.erase(r->origPath);
+
+                // Kaydedilen pikselleri cache'e ekle — geri navigasyonda anında yüklenir
+                if (!g_edit.pixels.empty() && g_edit.width > 0 && g_edit.height > 0)
+                {
+                    if (g_decodeCache.size() >= kCacheMaxSize)
+                    {
+                        auto oldest = g_decodeCache.begin();
+                        delete oldest->second;
+                        g_decodeCache.erase(oldest);
+                    }
+                    auto* cached        = new DecodeResult();
+                    cached->path        = r->savedPath;
+                    cached->pixels      = g_edit.pixels;  // BGRA pre-multiplied
+                    cached->width       = g_edit.width;
+                    cached->height      = g_edit.height;
+                    cached->info        = g_imageInfo;
+                    cached->info.format = r->format;
+                    g_decodeCache[r->savedPath] = cached;
+                }
+            }
+
+            // Filmstrip thumbnail'ini güncel (döndürülmüş) piksellerden oluştur
+            if (g_renderer && !g_edit.pixels.empty() && g_edit.width > 0 && g_edit.height > 0)
+            {
+                constexpr UINT kTargetH = static_cast<UINT>(StripLayout::ThumbH);
+                const float aspect = static_cast<float>(g_edit.width) / static_cast<float>(g_edit.height);
+                const UINT  thumbH = kTargetH;
+                const UINT  thumbW = max(1u, static_cast<UINT>(thumbH * aspect));
+                std::vector<uint8_t> tp(static_cast<size_t>(thumbW) * thumbH * 4);
+                for (UINT dy = 0; dy < thumbH; ++dy)
+                    for (UINT dx = 0; dx < thumbW; ++dx)
+                    {
+                        UINT sy = dy * g_edit.height / thumbH;
+                        UINT sx = dx * g_edit.width  / thumbW;
+                        const uint8_t* s = &g_edit.pixels[(static_cast<size_t>(sy) * g_edit.width + sx) * 4];
+                        uint8_t*       d = &tp[(static_cast<size_t>(dy) * thumbW + dx) * 4];
+                        d[0]=s[0]; d[1]=s[1]; d[2]=s[2]; d[3]=s[3];
+                    }
+                g_renderer->LoadThumbnail(r->savedPath, tp.data(), thumbW, thumbH);
+            }
+        }
+        delete r;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
 
     case WM_DECODE_DONE:
     {
@@ -1583,8 +2093,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_THUMB_DONE:
     {
         auto* result = reinterpret_cast<ThumbResult*>(lParam);
-        // Geçersiz token → başka bir navigasyon iptal etti, atla
-        if (result->cancelToken == g_thumbCancel.load() && g_renderer && !result->pixels.empty())
+        // Token kontrolü yok: geç gelen yavaş HEIC decode sonuçları da cache'e alınır.
+        // LRU eviction (ThumbCacheMax=20) belleği sınırlı tutar.
+        if (g_renderer && !result->pixels.empty())
         {
             g_renderer->LoadThumbnail(result->path,
                                       result->pixels.data(),
@@ -1632,6 +2143,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         KillTimer(hwnd, kIndexFadeTimerID);
         KillTimer(hwnd, kZoomFadeTimerID);
         KillTimer(hwnd, kCopyFeedbackTimerID);
+        KillTimer(hwnd, kEditToolbarIdleTimerID);
+        KillTimer(hwnd, kEditToolbarFadeTimerID);
         timeEndPeriod(1);
         // Prefetch cache'ini temizle
         {
