@@ -45,12 +45,12 @@
 
     <!-- Main executable -->
     <Component Id="AppExe" Directory="INSTALLFOLDER" Guid="A1B2C3D4-E5F6-4789-A0B1-C2D3E4F5A6B7">
-      <File Id="LuminaCpp" Source="..\x64\Release\LuminaCpp.exe" KeyPath="yes" />
+      <File Id="LuminaCpp" Source="x64\Release\LuminaCpp.exe" KeyPath="yes" />
     </Component>
 
     <!-- Shell thumbnail handler DLL + COM registration -->
     <Component Id="ShellDll" Directory="INSTALLFOLDER" Guid="B2C3D4E5-F6A7-4890-B1C2-D3E4F5A6B7C8">
-      <File Id="LuminaShell" Source="..\x64\Release\LuminaShell.dll" KeyPath="yes" />
+      <File Id="LuminaShell" Source="x64\Release\LuminaShell.dll" KeyPath="yes" />
 
       <!-- CLSID: {3C7F5A2D-4B8E-4F5C-A1B2-3C4D5E6F7A8B} -->
       <RegistryValue Root="HKLM"
