@@ -60,7 +60,7 @@ jobs:
 
       - name: Install WiX Toolset v4
         shell: pwsh
-        run: dotnet tool install --global wix
+        run: dotnet tool install --global wix --version "4.*"
 
       - name: Build MSI
         shell: pwsh
