@@ -133,6 +133,12 @@ static std::unordered_map<std::wstring, DecodeResult*> g_decodeCache;
 static constexpr size_t                                kCacheMaxSize   = 24;  // ~1.15GB (12MP HEIC × 24)
 static constexpr int                                   kPrefetchRange  = 8;   // ±8 = 16 komşu
 
+// --- GPS adres (Nominatim) in-process cache ---
+// Key: L"lat,lon" (6 ondalık, virgülle ayrılmış), Value: konum adı
+// Uygulama yaşam süresi boyunca tutulur; aynı koordinat için tek HTTP isteği yapılır.
+static std::mutex                                       g_locationCacheMutex;
+static std::unordered_map<std::wstring, std::wstring>  g_locationCache;
+
 // Path-based prefetch iptal seti: decode tamamlandığında path hâlâ
 // isteniyorsa cache'e eklenir, yoksa sonuç atılır.
 static std::mutex                                        g_prefetchDesiredMutex;
@@ -150,6 +156,29 @@ static std::atomic<uint64_t>                           g_tileCancel{0};
 // --- Decode yardımcıları ---
 
 // Ortak decode mantığı — hem ana decode hem prefetch tarafından kullanılır.
+// Cache'li FetchLocationName: aynı koordinat için tek HTTP isteği yapılır.
+// Thread-safe: birden fazla thread aynı anda çağırabilir.
+static std::wstring FetchLocationCached(double lat, double lon)
+{
+    wchar_t key[64];
+    swprintf_s(key, L"%.6f,%.6f", lat, lon);
+
+    {
+        std::lock_guard<std::mutex> lk(g_locationCacheMutex);
+        auto it = g_locationCache.find(key);
+        if (it != g_locationCache.end())
+            return it->second;
+    }
+
+    std::wstring name = FetchLocationName(lat, lon);
+
+    {
+        std::lock_guard<std::mutex> lk(g_locationCacheMutex);
+        g_locationCache[key] = name;  // boş string de cache'lenir (başarısız istek tekrar atılmaz)
+    }
+    return name;
+}
+
 // COM zaten başlatılmış olmalı. result->path önceden doldurulmuş olmalı.
 // fetchLocation=false → Nominatim atlanır (StartDecode'da ayrı aşamada yapılır).
 static void DoDecodeToResult(DecodeResult* result, bool fetchLocation = true)
@@ -198,7 +227,7 @@ static void DoDecodeToResult(DecodeResult* result, bool fetchLocation = true)
         // Nominatim reverse geocoding — fetchLocation=false ise atlanır
         if (fetchLocation && decoded.hasGpsDecimal)
             result->info.gpsLocationName =
-                FetchLocationName(decoded.gpsLatDecimal, decoded.gpsLonDecimal);
+                FetchLocationCached(decoded.gpsLatDecimal, decoded.gpsLonDecimal);
     }
     else
     {
@@ -294,7 +323,7 @@ static void StartDecode(HWND hwnd, const std::wstring& path)
         // ── Aşama 3: Nominatim reverse geocoding (görsel zaten göründü) ─────────
         if (hasGps && g_decodeGeneration.load() == gen)
         {
-            auto locName = FetchLocationName(gpsLat, gpsLon);
+            auto locName = FetchLocationCached(gpsLat, gpsLon);
             if (!locName.empty() && g_decodeGeneration.load() == gen)
             {
                 auto* loc           = new LocationResult{};
@@ -887,7 +916,7 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
                     const double   lon = g_imageInfo.gpsLonDecimal;
                     std::thread([hwnd, lat, lon, gen]()
                     {
-                        auto locName = FetchLocationName(lat, lon);
+                        auto locName = FetchLocationCached(lat, lon);
                         if (!locName.empty() && g_decodeGeneration.load() == gen)
                         {
                             auto* loc         = new LocationResult{};

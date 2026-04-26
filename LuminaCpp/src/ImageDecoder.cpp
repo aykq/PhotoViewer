@@ -13,6 +13,7 @@
 #include <webp/decode.h>
 #include <webp/demux.h>   // WebPAnimDecoder (animated WebP)
 #include <webp/encode.h>  // WebPEncodeRGBA (encode)
+#include <webp/mux.h>     // WebPMux (EXIF chunk ekleme)
 #include <libheif/heif.h>
 #include <jxl/decode.h>
 #include <jxl/codestream_header.h>
@@ -22,6 +23,7 @@
 #include <avif/avif.h>
 
 #pragma comment(lib, "libwebpdemux.lib")
+#pragma comment(lib, "libwebpmux.lib")
 #pragma comment(lib, "jxl_threads.lib")
 
 #pragma warning(push)
@@ -2120,9 +2122,71 @@ static bool WriteAllBytes(const std::wstring& path, const void* data, DWORD size
     return ok;
 }
 
+// Ham EXIF byte dizisinde Orientation tag'ini (274) newVal olarak yazar.
+// HEIC 4-byte offset header'ı veya "Exif\0\0" prefix'i varsa atlanır.
+static void PatchExifOrientation(std::vector<uint8_t>& exif, uint16_t newVal)
+{
+    const uint8_t* p   = exif.data();
+    size_t         sz  = exif.size();
+    size_t         off = 0;
+
+    // "Exif\0\0" prefix
+    if (sz >= 6 && memcmp(p, "Exif\0\0", 6) == 0) { off = 6; }
+    // HEIC ISO 14496-12 ExifDataBlock: ilk 4 byte big-endian offset
+    else if (sz >= 4)
+    {
+        uint32_t iso = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+                       (uint32_t(p[2]) << 8)  |  uint32_t(p[3]);
+        size_t tiff = 4 + iso;
+        if (tiff + 4 <= sz &&
+            ((p[tiff] == 'I' && p[tiff+1] == 'I') || (p[tiff] == 'M' && p[tiff+1] == 'M')))
+            off = tiff;
+    }
+    if (off + 8 > sz) return;
+
+    const uint8_t* t  = p + off;
+    size_t         tsz = sz - off;
+    bool le = (t[0] == 'I' && t[1] == 'I');
+    if (!le && !(t[0] == 'M' && t[1] == 'M')) return;
+
+    auto r16 = [&](size_t o) -> uint16_t {
+        if (o + 2 > tsz) return 0;
+        return le ? uint16_t(t[o] | (t[o+1] << 8))
+                  : uint16_t((t[o] << 8) | t[o+1]);
+    };
+    auto r32 = [&](size_t o) -> uint32_t {
+        if (o + 4 > tsz) return 0;
+        return le ? (uint32_t(t[o]) | uint32_t(t[o+1])<<8 | uint32_t(t[o+2])<<16 | uint32_t(t[o+3])<<24)
+                  : (uint32_t(t[o])<<24 | uint32_t(t[o+1])<<16 | uint32_t(t[o+2])<<8 | uint32_t(t[o+3]));
+    };
+    auto w16 = [&](size_t o, uint16_t v) {
+        if (o + 2 > tsz) return;
+        uint8_t* w = exif.data() + off + o;
+        if (le) { w[0] = v & 0xFF; w[1] = v >> 8; }
+        else    { w[0] = v >> 8;   w[1] = v & 0xFF; }
+    };
+
+    if (r16(2) != 42) return;  // TIFF magic
+    uint32_t ifd0 = r32(4);
+    if (ifd0 + 2 > tsz) return;
+    uint16_t n = r16(ifd0);
+    for (uint16_t i = 0; i < n; ++i)
+    {
+        size_t e = ifd0 + 2 + static_cast<size_t>(i) * 12;
+        if (e + 12 > tsz) break;
+        if (r16(e) == 274)  // Orientation tag
+        {
+            // SHORT (type=3), count=1 → value at e+8 (little-endian SHORT)
+            w16(e + 8, newVal);
+            return;
+        }
+    }
+}
+
 // WIC encoder: JPEG, PNG, BMP, TIFF
 // sourcePath: dolu ise kaynak dosyanın EXIF/metadata blokları kopyalanır ve
 //             Orientation etiketi 1 (normal) olarak sıfırlanır (pikseller zaten döndürülmüş).
+// Aynı yola yazarken temp dosya kullanılır (dosya kilidi önleme).
 static bool SaveImageWIC(const std::wstring& path, const GUID& fmt,
                           const uint8_t* bgraStraight, UINT width, UINT height,
                           const std::wstring& sourcePath = L"")
@@ -2135,8 +2199,13 @@ static bool SaveImageWIC(const std::wstring& path, const GUID& fmt,
     bool isJpeg = (fmt == GUID_ContainerFormatJpeg);
     bool isTiff = (fmt == GUID_ContainerFormatTiff);
 
-    // Metadata pre-read: kaynak dosya, çıktıyla aynı olsa bile WICDecodeMetadataCacheOnLoad
-    // tüm veriyi belleğe alır; çıktı akışı açılmadan önce okunan bloklar güvenle kullanılabilir.
+    // Aynı yola yazıyorsak (overwrite) temp dosya kullan:
+    // kaynak decoder dosyayı kilitler; write stream aynı yolu açamaz.
+    // WICDecodeMetadataCacheOnLoad bellekte tutulur ama COM objesi dosyayı bırakmaz.
+    bool useTemp = (!sourcePath.empty() && (isJpeg || isTiff) &&
+                    _wcsicmp(path.c_str(), sourcePath.c_str()) == 0);
+    std::wstring writePath = useTemp ? (path + L".lumtmp") : path;
+
     IWICBitmapDecoder*   srcDecoder  = nullptr;
     IWICBitmapFrameDecode* srcFrame  = nullptr;
     IWICMetadataBlockReader* blkRdr  = nullptr;
@@ -2156,7 +2225,7 @@ static bool SaveImageWIC(const std::wstring& path, const GUID& fmt,
     IWICStream* stream = nullptr;
     HRESULT hr = wic->CreateStream(&stream);
     if (FAILED(hr)) goto cleanup_early;
-    hr = stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE);
+    hr = stream->InitializeFromFilename(writePath.c_str(), GENERIC_WRITE);
     if (FAILED(hr)) { stream->Release(); stream = nullptr; goto cleanup_early; }
 
     {
@@ -2236,6 +2305,13 @@ static bool SaveImageWIC(const std::wstring& path, const GUID& fmt,
         if (srcFrame) srcFrame->Release();
         if (srcDecoder) srcDecoder->Release();
         wic->Release();
+
+        // Temp dosyayı hedef yere taşı (kaynak decoder artık kapalı)
+        if (ok && useTemp)
+            ok = (MoveFileExW(writePath.c_str(), path.c_str(),
+                              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0);
+        if (!ok && useTemp)
+            DeleteFileW(writePath.c_str());
         return ok;
     }
 
@@ -2244,12 +2320,14 @@ cleanup_early:
     if (srcFrame)  srcFrame->Release();
     if (srcDecoder) srcDecoder->Release();
     wic->Release();
+    if (useTemp) DeleteFileW(writePath.c_str());
     return false;
 }
 
-// WebP encoder: libwebp
+// WebP encoder: libwebp (sourcePath varsa EXIF chunk kopyalanır)
 static bool SaveImageWebP(const std::wstring& path, const uint8_t* bgraStraight,
-                           UINT width, UINT height)
+                           UINT width, UINT height,
+                           const std::wstring& sourcePath = L"")
 {
     // BGRA → RGBA
     std::vector<uint8_t> rgba(static_cast<size_t>(width) * height * 4);
@@ -2263,15 +2341,67 @@ static bool SaveImageWebP(const std::wstring& path, const uint8_t* bgraStraight,
     size_t outputSize = WebPEncodeRGBA(rgba.data(), static_cast<int>(width),
                                        static_cast<int>(height),
                                        static_cast<int>(width * 4), 90.0f, &output);
-    bool ok = (output && outputSize > 0)
-           && WriteAllBytes(path, output, static_cast<DWORD>(outputSize));
+    if (!output || outputSize == 0) { WebPFree(output); return false; }
+
+    // Kaynak WebP'den EXIF chunk'ı çıkar
+    std::vector<uint8_t> exifChunk;
+    if (!sourcePath.empty())
+    {
+        auto srcData = ReadFileBytes(sourcePath);
+        if (!srcData.empty())
+        {
+            WebPData wd = { srcData.data(), srcData.size() };
+            WebPDemuxer* dmx = WebPDemux(&wd);
+            if (dmx)
+            {
+                WebPChunkIterator ci{};
+                if (WebPDemuxGetChunk(dmx, "EXIF", 1, &ci))
+                {
+                    exifChunk.assign(ci.chunk.bytes, ci.chunk.bytes + ci.chunk.size);
+                    WebPDemuxReleaseChunkIterator(&ci);
+                }
+                WebPDemuxDelete(dmx);
+            }
+        }
+    }
+
+    bool ok = false;
+    if (exifChunk.empty())
+    {
+        // EXIF yoksa doğrudan yaz
+        ok = WriteAllBytes(path, output, static_cast<DWORD>(outputSize));
+    }
+    else
+    {
+        // Orientation'ı 1'e patch'le, WebPMux ile EXIF ekle
+        PatchExifOrientation(exifChunk, 1);
+
+        WebPData encodedWebP = { output, outputSize };
+        WebPMux* mux = WebPMuxCreate(&encodedWebP, 0);
+        if (mux)
+        {
+            WebPData exifData = { exifChunk.data(), exifChunk.size() };
+            WebPMuxSetChunk(mux, "EXIF", &exifData, 0);
+
+            WebPData assembled = { nullptr, 0 };
+            if (WebPMuxAssemble(mux, &assembled) == WEBP_MUX_OK)
+            {
+                ok = WriteAllBytes(path, assembled.bytes, static_cast<DWORD>(assembled.size));
+                WebPDataClear(&assembled);
+            }
+            WebPMuxDelete(mux);
+        }
+        if (!ok)
+            ok = WriteAllBytes(path, output, static_cast<DWORD>(outputSize));  // fallback: EXIF'siz yaz
+    }
     WebPFree(output);
     return ok;
 }
 
 // HEIC encoder: libheif (HEVC; AV1 fallback)
 static bool SaveImageHEIC(const std::wstring& path, const uint8_t* bgraStraight,
-                           UINT width, UINT height)
+                           UINT width, UINT height,
+                           const std::wstring& sourcePath = L"")
 {
     heif_context* ctx = heif_context_alloc();
     if (!ctx) return false;
@@ -2376,6 +2506,46 @@ static bool SaveImageHEIC(const std::wstring& path, const uint8_t* bgraStraight,
     heif_image_release(img);
     heif_encoder_release(enc);
 
+    // EXIF: kaynak HEIC'ten al, Orientation'ı 1'e patch'le, yeni dosyaya ekle
+    if (err.code == heif_error_Ok && outHandle && !sourcePath.empty())
+    {
+        heif_context* srcCtx = heif_context_alloc();
+        if (srcCtx)
+        {
+            char srcUtf8[MAX_PATH * 4]{};
+            WideCharToMultiByte(CP_UTF8, 0, sourcePath.c_str(), -1,
+                                srcUtf8, static_cast<int>(sizeof(srcUtf8)), nullptr, nullptr);
+            if (heif_context_read_from_file(srcCtx, srcUtf8, nullptr).code == heif_error_Ok)
+            {
+                heif_image_handle* srcHandle = nullptr;
+                if (heif_context_get_primary_image_handle(srcCtx, &srcHandle).code == heif_error_Ok)
+                {
+                    int nMeta = heif_image_handle_get_number_of_metadata_blocks(srcHandle, "Exif");
+                    if (nMeta > 0)
+                    {
+                        heif_item_id metaId = 0;
+                        heif_image_handle_get_list_of_metadata_block_IDs(srcHandle, "Exif", &metaId, 1);
+                        size_t exifSz = heif_image_handle_get_metadata_size(srcHandle, metaId);
+                        if (exifSz > 0)
+                        {
+                            std::vector<uint8_t> exifBuf(exifSz);
+                            if (heif_image_handle_get_metadata(srcHandle, metaId, exifBuf.data()).code
+                                == heif_error_Ok)
+                            {
+                                PatchExifOrientation(exifBuf, 1);
+                                heif_context_add_exif_metadata(ctx, outHandle,
+                                                               exifBuf.data(),
+                                                               static_cast<int>(exifSz));
+                            }
+                        }
+                    }
+                    heif_image_handle_release(srcHandle);
+                }
+            }
+            heif_context_free(srcCtx);
+        }
+    }
+
     bool ok = false;
     if (err.code == heif_error_Ok) {
         char pathUtf8[MAX_PATH * 4]{};
@@ -2396,9 +2566,10 @@ static bool SaveImageJXL(const std::wstring&, const uint8_t*, UINT, UINT)
     return false;
 }
 
-// AVIF encoder: libavif
+// AVIF encoder: libavif (sourcePath varsa EXIF kopyalanır)
 static bool SaveImageAVIF(const std::wstring& path, const uint8_t* bgraStraight,
-                           UINT width, UINT height)
+                           UINT width, UINT height,
+                           const std::wstring& sourcePath = L"")
 {
     bool hasAlpha = false;
     for (UINT i = 0; i < width * height; ++i)
@@ -2411,6 +2582,29 @@ static bool SaveImageAVIF(const std::wstring& path, const uint8_t* bgraStraight,
     img->transferCharacteristics = AVIF_TRANSFER_CHARACTERISTICS_SRGB;
     img->matrixCoefficients      = AVIF_MATRIX_COEFFICIENTS_BT601;
     img->yuvRange                = AVIF_RANGE_FULL;
+
+    // Kaynak AVIF'ten EXIF al, Orientation'ı 1'e patch'le
+    if (!sourcePath.empty())
+    {
+        auto srcData = ReadFileBytes(sourcePath);
+        if (!srcData.empty())
+        {
+            avifDecoder* dec = avifDecoderCreate();
+            dec->ignoreExif = AVIF_FALSE;
+            avifResult r = avifDecoderSetIOMemory(dec, srcData.data(), srcData.size());
+            if (r == AVIF_RESULT_OK) r = avifDecoderParse(dec);
+            if (r == AVIF_RESULT_OK && dec->image && dec->image->exif.size > 0)
+            {
+                std::vector<uint8_t> exifBuf(dec->image->exif.data,
+                                             dec->image->exif.data + dec->image->exif.size);
+                PatchExifOrientation(exifBuf, 1);
+                // avifImageSetMetadataExif: irot/imir flag'lerini de ayarlar;
+                // orientation=1 → dönüşüm yok, pikseller fiziksel olarak doğru.
+                avifImageSetMetadataExif(img, exifBuf.data(), exifBuf.size());
+            }
+            avifDecoderDestroy(dec);
+        }
+    }
 
     avifRGBImage rgb{};
     avifRGBImageSetDefaults(&rgb, img);
@@ -2462,11 +2656,11 @@ bool SaveImage(const std::wstring& path, const std::wstring& format,
     if (format == L"TIFF" || format == L"TIF")
                            return SaveImageWIC(path, GUID_ContainerFormatTiff, px, width, height, sourcePath);
     if (format == L"WebP" || format == L"WEBP")
-                           return SaveImageWebP(path, px, width, height);
+                           return SaveImageWebP(path, px, width, height, sourcePath);
     if (format == L"HEIC" || format == L"HEIF")
-                           return SaveImageHEIC(path, px, width, height);
+                           return SaveImageHEIC(path, px, width, height, sourcePath);
     if (format == L"JXL")  return SaveImageJXL(path,  px, width, height);
-    if (format == L"AVIF") return SaveImageAVIF(path, px, width, height);
+    if (format == L"AVIF") return SaveImageAVIF(path, px, width, height, sourcePath);
 
     // Bilinmeyen format → PNG olarak kaydet
     return SaveImageWIC(path, GUID_ContainerFormatPng, px, width, height);
