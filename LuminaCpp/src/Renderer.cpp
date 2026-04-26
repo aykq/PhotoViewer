@@ -1052,11 +1052,30 @@ void Renderer::DrawSaveBar(const ViewState& vs)
 
     float bx = barLeft + kPadX;
 
+    int btnIdx = 0;
     auto DrawBtn = [&](ID2D1SolidColorBrush* bg, const wchar_t* label, D2D1_RECT_F& outRect)
     {
+        ++btnIdx;
         outRect = D2D1::RectF(bx, btnTop, bx + btnW, btnTop + kBtnH);
         D2D1_ROUNDED_RECT rr = { outRect, 6.0f, 6.0f };
         m_renderTarget->FillRoundedRectangle(rr, bg);
+
+        // Hover / press overlay
+        if (vs.saveBarPressedBtn == btnIdx)
+        {
+            float savedOp = m_overlayBrush->GetOpacity();
+            m_overlayBrush->SetOpacity(0.18f);
+            m_renderTarget->FillRoundedRectangle(rr, m_overlayBrush);
+            m_overlayBrush->SetOpacity(savedOp);
+        }
+        else if (vs.saveBarHover == btnIdx)
+        {
+            float savedOp = m_activeBrush->GetOpacity();
+            m_activeBrush->SetOpacity(0.28f);
+            m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+            m_activeBrush->SetOpacity(savedOp);
+        }
+
         m_renderTarget->DrawText(label, static_cast<UINT32>(wcslen(label)),
                                   m_btnFormat, outRect, m_whiteBrush);
         bx += btnW + kGap;
@@ -1324,19 +1343,25 @@ void Renderer::UploadMapTileRaw(int zoom, int x, int y,
 
     MapTileKey key{ zoom, x, y };
 
-    auto it = m_mapTileCache.find(key);
-    if (it != m_mapTileCache.end())
-    {
-        if (it->second) it->second->Release();
-        m_mapTileCache.erase(it);
-    }
+    // Tile zaten cache'teyse tekrar yükleme — OSM verileri değişmez
+    if (m_mapTileCache.count(key)) return;
 
     D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
     );
     ID2D1Bitmap* bmp = nullptr;
     if (SUCCEEDED(m_renderTarget->CreateBitmap(D2D1::SizeU(w, h), bgra, w * 4, props, &bmp)) && bmp)
+    {
+        // Cache 60 tile (~15MB) sınırını aşarsa en eski girdiyi at
+        constexpr size_t kMaxTiles = 60;
+        if (m_mapTileCache.size() >= kMaxTiles)
+        {
+            auto oldest = m_mapTileCache.begin();
+            if (oldest->second) oldest->second->Release();
+            m_mapTileCache.erase(oldest);
+        }
         m_mapTileCache[key] = bmp;
+    }
 }
 
 // ─── OSM Harita Önizlemesi ────────────────────────────────────────────────────

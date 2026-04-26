@@ -126,6 +126,10 @@ struct ViewState
     float editToolbarAlpha     = 0.0f;  // edit toolbar görünürlüğü (hover fade, 0=gizli 1=tam)
     bool  editBtnRotLPressed   = false;  // ↺ (CCW) butonu basılı
     bool  editBtnRotRPressed   = false;  // ↻ (CW)  butonu basılı
+
+    // Save bar buton durumları (0=yok, 1=Kaydet, 2=Kaydetme, 3=Ayrı Kaydet)
+    int   saveBarHover         = 0;
+    int   saveBarPressedBtn    = 0;
 };
 
 // Renderer: Direct2D render target yönetimi + WIC görüntü yükleme

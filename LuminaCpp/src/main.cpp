@@ -817,7 +817,6 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
     UpdateWindowTitle(hwnd, path);
     ++g_thumbCancel;  // Eski thumbnail decode thread'lerini iptal et
     ++g_tileCancel;   // Eski tile fetch thread'lerini iptal et
-    if (g_renderer) g_renderer->ClearMapTiles();  // Önceki görüntünün tile'larını temizle
 
     // Edit durumunu temizle — navigasyonda kaydedilmemiş değişiklikler atılır
     g_edit.isDirty             = false;
@@ -1289,6 +1288,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 if (hitSave || hitDiscard || hitSaveAs)
                 {
                     g_clickInSaveBar = true;
+                    g_viewState.saveBarPressedBtn = hitSave ? 1 : (hitDiscard ? 2 : 3);
                     InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -1379,6 +1379,34 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
         }
 
+        // Save bar hover — hangi butonun üzerinde olduğunu güncelle
+        if (g_renderer && g_renderer->IsSaveBarVisible())
+        {
+            if (!g_mouseTracking)
+            {
+                TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+                TrackMouseEvent(&tme);
+                g_mouseTracking = true;
+            }
+            auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
+                return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+            };
+            int newHover = 0;
+            if      (inRect(mx, my, g_renderer->GetSaveBarSaveRect()))    newHover = 1;
+            else if (inRect(mx, my, g_renderer->GetSaveBarDiscardRect())) newHover = 2;
+            else if (inRect(mx, my, g_renderer->GetSaveBarSaveAsRect()))  newHover = 3;
+            if (newHover != g_viewState.saveBarHover)
+            {
+                g_viewState.saveBarHover = newHover;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+        }
+        else if (g_viewState.saveBarHover != 0)
+        {
+            g_viewState.saveBarHover = 0;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+
         if (!g_dragging) return 0;
         float nx = g_panAtDragStartX + (mx - g_dragStartX);
         float ny = g_panAtDragStartY + (my - g_dragStartY);
@@ -1395,6 +1423,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             KillTimer(hwnd, kEditToolbarIdleTimerID);
             QueryPerformanceCounter(&g_editToolbarFadeLastTime);
             SetTimer(hwnd, kEditToolbarFadeTimerID, kAnimIntervalMs, nullptr);
+        }
+        if (g_viewState.saveBarHover != 0 || g_viewState.saveBarPressedBtn != 0)
+        {
+            g_viewState.saveBarHover      = 0;
+            g_viewState.saveBarPressedBtn = 0;
+            InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
 
@@ -1430,6 +1464,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (g_clickInSaveBar)
         {
             g_clickInSaveBar = false;
+            g_viewState.saveBarPressedBtn = 0;
             float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
             if (delta < 5.0f && g_renderer)
             {
