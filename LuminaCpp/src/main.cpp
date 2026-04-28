@@ -441,6 +441,7 @@ static float g_mouseDownX        = 0.0f;
 static float g_mouseDownY        = 0.0f;
 static bool  g_clickIsLeft       = false;
 static bool  g_clickIsInfoButton = false;
+static bool  g_clickIsDeleteBtn  = false;
 static bool  g_clickInPanel      = false;  // Panel alanı tıklaması — drag/zoom engellenir
 static bool  g_clickInStrip      = false;  // Strip veya toggle tıklaması
 static bool  g_mouseTracking     = false;  // TrackMouseEvent kaydı aktif mi
@@ -1271,6 +1272,66 @@ static void DoRotateCCW(HWND hwnd)
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+static void DoDelete(HWND hwnd)
+{
+    if (g_edit.filePath.empty()) return;
+    if (!g_navigator || g_navigator->empty()) return;
+
+    // Kaydedilmemiş değişiklik varsa silmeye izin verme
+    if (g_edit.isDirty)
+    {
+        MessageBoxW(hwnd,
+            L"Bu fotoğraf üzerinde kaydedilmemiş değişiklikler var.\n"
+            L"Önce değişiklikleri kaydedin veya iptal edin.",
+            L"Silinemedi", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    // Onay dialogu — "Evet" varsayılan seçili (Enter ile hızlı silme)
+    std::wstring msg = L"\"" + g_imageInfo.filename + L"\" dosyasını\n"
+                       L"Geri Dönüşüm Kutusu'na taşımak istediğinize emin misiniz?";
+    int res = MessageBoxW(hwnd, msg.c_str(), L"Fotoğrafı Sil",
+                          MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1);
+    if (res != IDYES) return;
+
+    // SHFileOperationW ile Geri Dönüşüm Kutusu'na taşı
+    std::wstring pathDblNull = g_edit.filePath + L'\0' + L'\0';
+    SHFILEOPSTRUCTW fos = {};
+    fos.hwnd   = hwnd;
+    fos.wFunc  = FO_DELETE;
+    fos.pFrom  = pathDblNull.c_str();
+    fos.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT;
+
+    if (SHFileOperationW(&fos) == 0 && !fos.fAnyOperationsAborted)
+    {
+        // Başarılı — cache'den temizle
+        {
+            std::lock_guard<std::mutex> lk(g_cacheMutex);
+            g_decodeCache.erase(g_edit.filePath);
+        }
+
+        // Navigator'ı güncelle
+        std::wstring nextPath = g_navigator->refresh();
+
+        if (g_navigator->empty())
+        {
+            // Dizindeki son fotoğraf silindi — boş pencere
+            ++g_decodeGeneration;
+            if (g_renderer) { g_renderer->ClearImage(); g_renderer->SetStripSlots({}, 0); }
+            g_viewState   = ViewState{};
+            g_imageInfo   = ImageInfo{};
+            g_edit        = EditState{};
+            UpdateWindowTitle(hwnd, L"");
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        else
+        {
+            // Komşu fotoğrafa geç
+            NavigateTo(hwnd, nextPath);
+        }
+    }
+}
+
 static void DoDiscard(HWND hwnd)
 {
     if (!g_edit.isDirty) return;
@@ -1451,15 +1512,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         SetCapture(hwnd);
         ResetIndexIdleTimer(hwnd);
 
-        // Info button önce kontrol edilir (sağ ok zone ile üst üste gelebilir)
+        // Info button ve Delete button kontrolü
         g_clickIsInfoButton = HitTestInfoButton(hwnd, mx, my, g_viewState.panelAnimWidth);
+        g_clickIsDeleteBtn  = false;
+        if (!g_clickIsInfoButton && g_renderer && g_renderer->IsDeleteBtnVisible())
+        {
+            D2D1_RECT_F dr = g_renderer->GetDeleteBtnRect();
+            g_clickIsDeleteBtn = (mx >= dr.left && mx <= dr.right && my >= dr.top && my <= dr.bottom);
+        }
         if (g_clickIsInfoButton)
         {
             g_viewState.infoBtnPressed = true;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
+        else if (g_clickIsDeleteBtn)
+        {
+            g_viewState.deleteBtnPressed = true;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
 
-        if (!g_clickIsInfoButton)
+        if (!g_clickIsInfoButton && !g_clickIsDeleteBtn)
         {
             // Edit toolbar butonu tıklaması
             if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
@@ -1809,6 +1881,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        // Delete button tıklaması
+        if (g_clickIsDeleteBtn)
+        {
+            g_viewState.deleteBtnPressed = false;
+            float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
+            if (delta < 5.0f)
+                DoDelete(hwnd);
+            else
+                InvalidateRect(hwnd, nullptr, FALSE);
+            g_clickIsDeleteBtn = false;
+            return 0;
+        }
+
         // Info button tıklaması
         if (g_clickIsInfoButton)
         {
@@ -2005,6 +2090,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         case VK_OEM_6:  // ']' — 90° sağa döndür
             DoRotateCW(hwnd);
+            break;
+
+        case VK_DELETE:  // Sil — Geri Dönüşüm Kutusu'na taşı
+            DoDelete(hwnd);
             break;
         }
         return 0;

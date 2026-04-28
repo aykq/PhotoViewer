@@ -113,6 +113,7 @@ struct ViewState
     bool  showThumbStrip    = true;   // F tuşuyla toggle — thumbnail filmstrip
     float stripAnimHeight   = 0.0f;   // Animasyonlu strip yüksekliği (0.0–StripLayout::OpenH)
     bool  infoBtnPressed       = false;  // Info butonu basılı tutulurken geçici highlight
+    bool  deleteBtnPressed     = false;  // Delete butonu basılı tutulurken highlight
     bool  toggleBtnPressed     = false;  // Filmstrip toggle pill basılı tutulurken highlight
     float indexBarAlpha        = 1.0f;   // Index göstergesi opaklığı (0=görünmez, 1=tam)
     float zoomIndicatorAlpha   = 0.0f;   // Zoom göstergesi opaklığı — alpha>0 ise çizilir
@@ -207,6 +208,10 @@ public:
     D2D1_RECT_F GetSaveBarDiscardRect() const { return m_saveBarDiscardRect; }
     D2D1_RECT_F GetSaveBarSaveAsRect()  const { return m_saveBarSaveAsRect; }
     bool        IsSaveBarVisible()      const { return m_saveBarVisible; }
+
+    // Delete butonu rect — info butonunun sağında; WndProc tıklama testi için
+    D2D1_RECT_F GetDeleteBtnRect()    const { return m_deleteBtnRect; }
+    bool        IsDeleteBtnVisible()  const { return m_deleteBtnVisible; }
 
     // Thumbnail strip — main.cpp tarafından yönetilir
     void LoadThumbnail(const std::wstring& path, const uint8_t* pixels, UINT w, UINT h);
@@ -316,6 +321,10 @@ private:
     D2D1_RECT_F m_editBtnRotLRect    = {};
     D2D1_RECT_F m_editBtnRotRRect    = {};
     bool        m_editToolbarVisible = false;
+
+    // Delete butonu — her Render'da güncellenir (info butonunun sağında)
+    D2D1_RECT_F m_deleteBtnRect    = {};
+    bool        m_deleteBtnVisible = false;
 
     // Save bar (kayıt seçenekleri) — her Render'da güncellenir
     D2D1_RECT_F m_saveBarSaveRect    = {};

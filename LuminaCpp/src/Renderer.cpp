@@ -749,6 +749,20 @@ void Renderer::DrawInfoButton(const ViewState& vs)
 
     // "i" glyph centered in the button
     m_renderTarget->DrawText(L"i", 1, m_textFormat, rect, m_whiteBrush);
+
+    // ── Delete butonu — info butonunun solunda, aynı boyutta ────────────────
+    const float delX0 = x0 - 6.0f - kSize;  // 6px boşluk + buton genişliği
+    const float delX1 = x0 - 6.0f;
+    m_deleteBtnRect = D2D1::RectF(delX0, y0, delX1, y1);
+    m_deleteBtnVisible = true;
+
+    D2D1_ROUNDED_RECT delRR = { m_deleteBtnRect, 8.0f, 8.0f };
+    auto* delFill = vs.deleteBtnPressed ? m_activeBrush : m_panelBgBrush;
+    m_renderTarget->FillRoundedRectangle(delRR, delFill);
+    m_renderTarget->DrawRoundedRectangle(delRR, m_separatorBrush, 1.0f);
+
+    // Çöp kutusu simgesi (U+1F5D1)
+    m_renderTarget->DrawText(L"\xD83D\xDDD1", 2, m_textFormat, m_deleteBtnRect, m_whiteBrush);
 }
 
 // ─── Ana Render ───────────────────────────────────────────────────────────────
