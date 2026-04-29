@@ -1272,29 +1272,129 @@ static void DoRotateCCW(HWND hwnd)
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-static void DoDelete(HWND hwnd)
+// ─── Piksel boyutlandırma ─────────────────────────────────────────────────────
+
+static void ResizePixels(std::vector<uint8_t>& pixels, UINT& w, UINT& h, UINT newW, UINT newH)
 {
-    if (g_edit.filePath.empty()) return;
-    if (!g_navigator || g_navigator->empty()) return;
+    if (newW == 0 || newH == 0 || (newW == w && newH == h)) return;
 
-    // Kaydedilmemiş değişiklik varsa silmeye izin verme
-    if (g_edit.isDirty)
+    std::vector<uint8_t> dst(static_cast<size_t>(newW) * newH * 4);
+    const float scaleX = float(w) / float(newW);
+    const float scaleY = float(h) / float(newH);
+
+    for (UINT y = 0; y < newH; ++y)
     {
-        MessageBoxW(hwnd,
-            L"Bu fotoğraf üzerinde kaydedilmemiş değişiklikler var.\n"
-            L"Önce değişiklikleri kaydedin veya iptal edin.",
-            L"Silinemedi", MB_OK | MB_ICONWARNING);
-        return;
+        for (UINT x = 0; x < newW; ++x)
+        {
+            float srcX = (x + 0.5f) * scaleX - 0.5f;
+            float srcY = (y + 0.5f) * scaleY - 0.5f;
+            int x0 = max(0, int(srcX));
+            int y0 = max(0, int(srcY));
+            int x1 = min(int(w) - 1, x0 + 1);
+            int y1 = min(int(h) - 1, y0 + 1);
+            float fx = srcX - float(x0), fy = srcY - float(y0);
+            for (int c = 0; c < 4; ++c)
+            {
+                float p00 = pixels[(y0 * w + x0) * 4 + c];
+                float p10 = pixels[(y0 * w + x1) * 4 + c];
+                float p01 = pixels[(y1 * w + x0) * 4 + c];
+                float p11 = pixels[(y1 * w + x1) * 4 + c];
+                float val = p00 * (1-fx) * (1-fy) + p10 * fx * (1-fy)
+                          + p01 * (1-fx) * fy     + p11 * fx * fy;
+                dst[(y * newW + x) * 4 + c] = static_cast<uint8_t>(val + 0.5f);
+            }
+        }
     }
+    pixels = std::move(dst);
+    w = newW;
+    h = newH;
+}
 
-    // Onay dialogu — "Evet" varsayılan seçili (Enter ile hızlı silme)
-    std::wstring msg = L"\"" + g_imageInfo.filename + L"\" dosyasını\n"
-                       L"Geri Dönüşüm Kutusu'na taşımak istediğinize emin misiniz?";
-    int res = MessageBoxW(hwnd, msg.c_str(), L"Fotoğrafı Sil",
-                          MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1);
-    if (res != IDYES) return;
+// Resize dialog'u aç — mevcut g_edit boyutlarını başlangıç değerleri olarak kullan
+static void DoOpenResizeDialog(HWND hwnd)
+{
+    if (g_edit.pixels.empty() || g_viewState.editIsAnimated) return;
+    if (g_isSaving.load()) return;
 
-    // SHFileOperationW ile Geri Dönüşüm Kutusu'na taşı
+    g_viewState.resizeOrigW    = int(g_edit.width);
+    g_viewState.resizeOrigH    = int(g_edit.height);
+    g_viewState.resizeW        = int(g_edit.width);
+    g_viewState.resizeH        = int(g_edit.height);
+    g_viewState.resizePct      = 100;
+    g_viewState.resizeMode     = 0;
+    g_viewState.resizeLockAspect = true;
+    g_viewState.resizeDlgHoverBtn   = 0;
+    g_viewState.resizeDlgPressedBtn = 0;
+    g_viewState.showResizeDialog    = true;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// Resize onaylandı — pikselleri boyutlandır, düzenlemeyi uygula
+static void DoResizeConfirmed(HWND hwnd)
+{
+    UINT tw = static_cast<UINT>(max(1, g_viewState.resizeW));
+    UINT th = static_cast<UINT>(max(1, g_viewState.resizeH));
+    ResizePixels(g_edit.pixels, g_edit.width, g_edit.height, tw, th);
+    g_edit.isDirty        = true;
+    g_viewState.editDirty = true;
+    g_viewState.editToolbarAlpha = 1.0f;
+    KillTimer(hwnd, kEditToolbarFadeTimerID);
+    KillTimer(hwnd, kEditToolbarIdleTimerID);
+    g_viewState.showResizeDialog = false;
+    DoApplyEdit(hwnd);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// Resize dialog buton ID'sine göre değer güncelleme
+static void ResizeDlgAdjust(HWND /*hwnd*/, int btnId)
+{
+    const int origW = g_viewState.resizeOrigW;
+    const int origH = g_viewState.resizeOrigH;
+    const bool lock = g_viewState.resizeLockAspect;
+
+    if (g_viewState.resizeMode == 0)   // piksel modu
+    {
+        constexpr int kStep = 10;
+        if (btnId == 5)   // W azalt
+        {
+            g_viewState.resizeW = max(1, g_viewState.resizeW - kStep);
+            if (lock && origW > 0)
+                g_viewState.resizeH = max(1, int(g_viewState.resizeW * float(origH) / float(origW) + 0.5f));
+        }
+        else if (btnId == 6)  // W artır
+        {
+            g_viewState.resizeW = g_viewState.resizeW + kStep;
+            if (lock && origW > 0)
+                g_viewState.resizeH = max(1, int(g_viewState.resizeW * float(origH) / float(origW) + 0.5f));
+        }
+        else if (btnId == 7)  // H azalt
+        {
+            g_viewState.resizeH = max(1, g_viewState.resizeH - kStep);
+            if (lock && origH > 0)
+                g_viewState.resizeW = max(1, int(g_viewState.resizeH * float(origW) / float(origH) + 0.5f));
+        }
+        else if (btnId == 8)  // H artır
+        {
+            g_viewState.resizeH = g_viewState.resizeH + kStep;
+            if (lock && origH > 0)
+                g_viewState.resizeW = max(1, int(g_viewState.resizeH * float(origW) / float(origH) + 0.5f));
+        }
+    }
+    else  // yüzde modu
+    {
+        constexpr int kStep = 5;
+        if (btnId == 5)
+            g_viewState.resizePct = max(1, g_viewState.resizePct - kStep);
+        else if (btnId == 6)
+            g_viewState.resizePct = min(1000, g_viewState.resizePct + kStep);
+
+        g_viewState.resizeW = max(1, int(origW * g_viewState.resizePct / 100.0f + 0.5f));
+        g_viewState.resizeH = max(1, int(origH * g_viewState.resizePct / 100.0f + 0.5f));
+    }
+}
+
+static void DoDeleteConfirmed(HWND hwnd)
+{
     std::wstring pathDblNull = g_edit.filePath + L'\0' + L'\0';
     SHFILEOPSTRUCTW fos = {};
     fos.hwnd   = hwnd;
@@ -1304,18 +1404,15 @@ static void DoDelete(HWND hwnd)
 
     if (SHFileOperationW(&fos) == 0 && !fos.fAnyOperationsAborted)
     {
-        // Başarılı — cache'den temizle
         {
             std::lock_guard<std::mutex> lk(g_cacheMutex);
             g_decodeCache.erase(g_edit.filePath);
         }
 
-        // Navigator'ı güncelle
         std::wstring nextPath = g_navigator->refresh();
 
         if (g_navigator->empty())
         {
-            // Dizindeki son fotoğraf silindi — boş pencere
             ++g_decodeGeneration;
             if (g_renderer) { g_renderer->ClearImage(); g_renderer->SetStripSlots({}, 0); }
             g_viewState   = ViewState{};
@@ -1326,10 +1423,27 @@ static void DoDelete(HWND hwnd)
         }
         else
         {
-            // Komşu fotoğrafa geç
             NavigateTo(hwnd, nextPath);
         }
     }
+}
+
+static void DoDelete(HWND hwnd)
+{
+    if (g_edit.filePath.empty()) return;
+    if (!g_navigator || g_navigator->empty()) return;
+
+    if (g_edit.isDirty)
+    {
+        g_viewState.showUnsavedWarningDialog = true;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+
+    g_viewState.showDeleteConfirmDialog = true;
+    g_viewState.deleteDlgHoverBtn       = 0;
+    g_viewState.deleteDlgPressedBtn     = 0;
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 static void DoDiscard(HWND hwnd)
@@ -1507,6 +1621,52 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float mx = static_cast<float>(GET_X_LPARAM(lParam));
         float my = static_cast<float>(GET_Y_LPARAM(lParam));
 
+        // Resize dialogu açıksa — buton press state güncelle, diğer etkileşimi engelle
+        if (g_viewState.showResizeDialog)
+        {
+            if (g_renderer && g_renderer->IsResizeDialogVisible())
+            {
+                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+                int hit = 0;
+                if      (inR(mx, my, g_renderer->GetResizeDlgCancelRect()))  hit = 1;
+                else if (inR(mx, my, g_renderer->GetResizeDlgApplyRect()))   hit = 2;
+                else if (inR(mx, my, g_renderer->GetResizeDlgModePxRect()))  hit = 3;
+                else if (inR(mx, my, g_renderer->GetResizeDlgModePctRect())) hit = 4;
+                else if (inR(mx, my, g_renderer->GetResizeDlgWDecRect()))    hit = 5;
+                else if (inR(mx, my, g_renderer->GetResizeDlgWIncRect()))    hit = 6;
+                else if (inR(mx, my, g_renderer->GetResizeDlgHDecRect()))    hit = 7;
+                else if (inR(mx, my, g_renderer->GetResizeDlgHIncRect()))    hit = 8;
+                else if (inR(mx, my, g_renderer->GetResizeDlgLockRect()))    hit = 9;
+                g_viewState.resizeDlgPressedBtn = hit;
+                SetCapture(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        // Silme dialogu açıksa — buton press state güncelle, diğer etkileşimi engelle
+        if (g_viewState.showDeleteConfirmDialog || g_viewState.showUnsavedWarningDialog)
+        {
+            if (g_renderer && g_renderer->IsDeleteDialogVisible())
+            {
+                auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+                if (!g_viewState.showUnsavedWarningDialog &&
+                    inRect(mx, my, g_renderer->GetDlgCancelRect()))
+                    g_viewState.deleteDlgPressedBtn = 1;
+                else if (inRect(mx, my, g_renderer->GetDlgDeleteRect()))
+                    g_viewState.deleteDlgPressedBtn = 2;
+                else
+                    g_viewState.deleteDlgPressedBtn = 0;
+                SetCapture(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
         g_mouseDownX = mx;
         g_mouseDownY = my;
         SetCapture(hwnd);
@@ -1536,15 +1696,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             // Edit toolbar butonu tıklaması
             if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
             {
-                D2D1_RECT_F rL = g_renderer->GetEditBtnRotLRect();
-                D2D1_RECT_F rR = g_renderer->GetEditBtnRotRRect();
-                bool hitL = (mx >= rL.left && mx <= rL.right && my >= rL.top && my <= rL.bottom);
-                bool hitR = (mx >= rR.left && mx <= rR.right && my >= rR.top && my <= rR.bottom);
-                if (hitL || hitR)
+                D2D1_RECT_F rL  = g_renderer->GetEditBtnRotLRect();
+                D2D1_RECT_F rR  = g_renderer->GetEditBtnRotRRect();
+                D2D1_RECT_F rRz = g_renderer->GetEditBtnResizeRect();
+                bool hitL  = (mx >= rL.left  && mx <= rL.right  && my >= rL.top  && my <= rL.bottom);
+                bool hitR  = (mx >= rR.left  && mx <= rR.right  && my >= rR.top  && my <= rR.bottom);
+                bool hitRz = (mx >= rRz.left && mx <= rRz.right && my >= rRz.top && my <= rRz.bottom);
+                if (hitL || hitR || hitRz)
                 {
                     g_clickInToolbar = true;
-                    g_viewState.editBtnRotLPressed = hitL;
-                    g_viewState.editBtnRotRPressed = hitR;
+                    g_viewState.editBtnRotLPressed   = hitL;
+                    g_viewState.editBtnRotRPressed   = hitR;
+                    g_viewState.editBtnResizePressed = hitRz;
                     InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -1631,6 +1794,56 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float mx = static_cast<float>(GET_X_LPARAM(lParam));
         float my = static_cast<float>(GET_Y_LPARAM(lParam));
 
+        // Resize dialogu açıksa — hover güncelle
+        if (g_viewState.showResizeDialog)
+        {
+            if (g_renderer && g_renderer->IsResizeDialogVisible())
+            {
+                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+                int newHover = 0;
+                if      (inR(mx, my, g_renderer->GetResizeDlgCancelRect()))  newHover = 1;
+                else if (inR(mx, my, g_renderer->GetResizeDlgApplyRect()))   newHover = 2;
+                else if (inR(mx, my, g_renderer->GetResizeDlgModePxRect()))  newHover = 3;
+                else if (inR(mx, my, g_renderer->GetResizeDlgModePctRect())) newHover = 4;
+                else if (inR(mx, my, g_renderer->GetResizeDlgWDecRect()))    newHover = 5;
+                else if (inR(mx, my, g_renderer->GetResizeDlgWIncRect()))    newHover = 6;
+                else if (inR(mx, my, g_renderer->GetResizeDlgHDecRect()))    newHover = 7;
+                else if (inR(mx, my, g_renderer->GetResizeDlgHIncRect()))    newHover = 8;
+                else if (inR(mx, my, g_renderer->GetResizeDlgLockRect()))    newHover = 9;
+                if (newHover != g_viewState.resizeDlgHoverBtn)
+                {
+                    g_viewState.resizeDlgHoverBtn = newHover;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            return 0;
+        }
+
+        // Silme dialogu açıksa — hover güncelle
+        if (g_viewState.showDeleteConfirmDialog || g_viewState.showUnsavedWarningDialog)
+        {
+            if (g_renderer && g_renderer->IsDeleteDialogVisible())
+            {
+                auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+                int newHover = 0;
+                if (!g_viewState.showUnsavedWarningDialog &&
+                    inRect(mx, my, g_renderer->GetDlgCancelRect()))
+                    newHover = 1;
+                else if (inRect(mx, my, g_renderer->GetDlgDeleteRect()))
+                    newHover = 2;
+                if (newHover != g_viewState.deleteDlgHoverBtn)
+                {
+                    g_viewState.deleteDlgHoverBtn = newHover;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            return 0;
+        }
+
         // Edit toolbar hover — düzenlenebilir statik görüntü varsa toolbar göster
         if (!g_viewState.editIsAnimated && !g_edit.pixels.empty())
         {
@@ -1711,6 +1924,129 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float mx = static_cast<float>(GET_X_LPARAM(lParam));
         float my = static_cast<float>(GET_Y_LPARAM(lParam));
 
+        // Resize dialogu açıksa — buton bırakma işlemi
+        if (g_viewState.showResizeDialog)
+        {
+            int pressed = g_viewState.resizeDlgPressedBtn;
+            g_viewState.resizeDlgPressedBtn = 0;
+            ReleaseCapture();
+
+            if (g_renderer && g_renderer->IsResizeDialogVisible() && pressed != 0)
+            {
+                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+                switch (pressed)
+                {
+                case 1:  // İptal
+                    g_viewState.showResizeDialog   = false;
+                    g_viewState.resizeDlgHoverBtn  = 0;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    break;
+                case 2:  // Uygula
+                    if (inR(mx, my, g_renderer->GetResizeDlgApplyRect()))
+                        DoResizeConfirmed(hwnd);
+                    else
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    break;
+                case 3:  // px modu
+                    if (inR(mx, my, g_renderer->GetResizeDlgModePxRect()))
+                    {
+                        if (g_viewState.resizeMode != 0)
+                        {
+                            g_viewState.resizeMode = 0;
+                            g_viewState.resizeW = g_viewState.resizeOrigW;
+                            g_viewState.resizeH = g_viewState.resizeOrigH;
+                        }
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    }
+                    break;
+                case 4:  // % modu
+                    if (inR(mx, my, g_renderer->GetResizeDlgModePctRect()))
+                    {
+                        if (g_viewState.resizeMode != 1)
+                        {
+                            g_viewState.resizeMode = 1;
+                            g_viewState.resizePct  = 100;
+                            g_viewState.resizeW    = g_viewState.resizeOrigW;
+                            g_viewState.resizeH    = g_viewState.resizeOrigH;
+                        }
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    }
+                    break;
+                case 9:  // Oran kilidi toggle
+                    if (inR(mx, my, g_renderer->GetResizeDlgLockRect()))
+                    {
+                        g_viewState.resizeLockAspect = !g_viewState.resizeLockAspect;
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    }
+                    break;
+                default:  // 5=W−, 6=W+, 7=H−, 8=H+
+                {
+                    // Dec/Inc doğrulama (mouse aynı buton üzerinde mi?)
+                    bool stillOn = false;
+                    if      (pressed == 5 && inR(mx, my, g_renderer->GetResizeDlgWDecRect())) stillOn = true;
+                    else if (pressed == 6 && inR(mx, my, g_renderer->GetResizeDlgWIncRect())) stillOn = true;
+                    else if (pressed == 7 && inR(mx, my, g_renderer->GetResizeDlgHDecRect())) stillOn = true;
+                    else if (pressed == 8 && inR(mx, my, g_renderer->GetResizeDlgHIncRect())) stillOn = true;
+                    if (stillOn)
+                        ResizeDlgAdjust(hwnd, pressed);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    break;
+                }
+                }
+            }
+            else
+                InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        // Silme dialogu açıksa — buton bırakma işlemi
+        if (g_viewState.showDeleteConfirmDialog || g_viewState.showUnsavedWarningDialog)
+        {
+            int pressed = g_viewState.deleteDlgPressedBtn;
+            g_viewState.deleteDlgPressedBtn = 0;
+            ReleaseCapture();
+
+            if (g_renderer && g_renderer->IsDeleteDialogVisible() && pressed != 0)
+            {
+                auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+                bool hitCancel = !g_viewState.showUnsavedWarningDialog &&
+                                  inRect(mx, my, g_renderer->GetDlgCancelRect());
+                bool hitDelete = inRect(mx, my, g_renderer->GetDlgDeleteRect());
+
+                if (g_viewState.showUnsavedWarningDialog)
+                {
+                    if (hitDelete) // "Tamam" butonu
+                    {
+                        g_viewState.showUnsavedWarningDialog = false;
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    }
+                }
+                else
+                {
+                    if (hitCancel && pressed == 1)
+                    {
+                        g_viewState.showDeleteConfirmDialog = false;
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    }
+                    else if (hitDelete && pressed == 2)
+                    {
+                        g_viewState.showDeleteConfirmDialog = false;
+                        g_viewState.deleteDlgHoverBtn = 0;
+                        DoDeleteConfirmed(hwnd);
+                    }
+                    else
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            else
+                InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
         bool wasDragging = g_dragging;
         g_dragging = false;
         ReleaseCapture();
@@ -1718,16 +2054,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         // Edit toolbar butonu tıklaması
         if (g_clickInToolbar)
         {
-            bool wasL = g_viewState.editBtnRotLPressed;
-            bool wasR = g_viewState.editBtnRotRPressed;
-            g_viewState.editBtnRotLPressed = false;
-            g_viewState.editBtnRotRPressed = false;
+            bool wasL  = g_viewState.editBtnRotLPressed;
+            bool wasR  = g_viewState.editBtnRotRPressed;
+            bool wasRz = g_viewState.editBtnResizePressed;
+            g_viewState.editBtnRotLPressed   = false;
+            g_viewState.editBtnRotRPressed   = false;
+            g_viewState.editBtnResizePressed = false;
             g_clickInToolbar = false;
             float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
             if (delta < 5.0f)
             {
-                if (wasL) DoRotateCCW(hwnd);
-                else if (wasR) DoRotateCW(hwnd);
+                if (wasL)       DoRotateCCW(hwnd);
+                else if (wasR)  DoRotateCW(hwnd);
+                else if (wasRz) DoOpenResizeDialog(hwnd);
             }
             else
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -1935,6 +2274,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float cx = static_cast<float>(GET_X_LPARAM(lParam));
         float cy = static_cast<float>(GET_Y_LPARAM(lParam));
 
+        // Yeniden boyutlandır dialogu açıkken çift tıklama ile zoom yapma
+        if (g_viewState.showResizeDialog) return 0;
+
         // Edit toolbar butonlarında çift tıklamayı engelle — hızlı ardışık döndürme desteği
         if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
         {
@@ -2039,6 +2381,48 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_KEYDOWN:
         ResetIndexIdleTimer(hwnd);
+
+        // Resize dialogu açıksa — Escape ile kapat, Enter ile uygula
+        if (g_viewState.showResizeDialog)
+        {
+            if (wParam == VK_ESCAPE)
+            {
+                g_viewState.showResizeDialog   = false;
+                g_viewState.resizeDlgHoverBtn  = 0;
+                g_viewState.resizeDlgPressedBtn = 0;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            else if (wParam == VK_RETURN)
+                DoResizeConfirmed(hwnd);
+            return 0;
+        }
+
+        // Silme dialogu açıksa — klavye ile de kontrol edilebilir
+        if (g_viewState.showDeleteConfirmDialog || g_viewState.showUnsavedWarningDialog)
+        {
+            if (wParam == VK_ESCAPE)
+            {
+                g_viewState.showDeleteConfirmDialog  = false;
+                g_viewState.showUnsavedWarningDialog = false;
+                g_viewState.deleteDlgHoverBtn        = 0;
+                g_viewState.deleteDlgPressedBtn      = 0;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            else if (wParam == VK_RETURN)
+            {
+                bool isWarning = g_viewState.showUnsavedWarningDialog;
+                g_viewState.showDeleteConfirmDialog  = false;
+                g_viewState.showUnsavedWarningDialog = false;
+                g_viewState.deleteDlgHoverBtn        = 0;
+                g_viewState.deleteDlgPressedBtn      = 0;
+                if (!isWarning)
+                    DoDeleteConfirmed(hwnd);
+                else
+                    InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
         switch (wParam)
         {
         case VK_ESCAPE:

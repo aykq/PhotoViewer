@@ -146,6 +146,9 @@ HRESULT Renderer::CreateDeviceResources()
     m_renderTarget->CreateSolidColorBrush(
         D2D1::ColorF(0.298f, 0.686f, 0.314f, 1.0f), &m_saveBtnBrush   // #4CAF50 — Kaydet
     );
+    m_renderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(0.776f, 0.157f, 0.157f, 1.0f), &m_deleteBrush    // #C62828 — Sil tehlike
+    );
     return S_OK;
 }
 
@@ -166,6 +169,7 @@ void Renderer::DiscardDeviceResources()
     m_mapTileCache.clear();
 
     if (m_bitmap)           { m_bitmap->Release();           m_bitmap = nullptr; }
+    if (m_deleteBrush)      { m_deleteBrush->Release();      m_deleteBrush = nullptr; }
     if (m_saveBtnBrush)     { m_saveBtnBrush->Release();     m_saveBtnBrush = nullptr; }
     if (m_separatorBrush)   { m_separatorBrush->Release();   m_separatorBrush = nullptr; }
     if (m_panelBgBrush)     { m_panelBgBrush->Release();     m_panelBgBrush = nullptr; }
@@ -757,12 +761,48 @@ void Renderer::DrawInfoButton(const ViewState& vs)
     m_deleteBtnVisible = true;
 
     D2D1_ROUNDED_RECT delRR = { m_deleteBtnRect, 8.0f, 8.0f };
-    auto* delFill = vs.deleteBtnPressed ? m_activeBrush : m_panelBgBrush;
+    // Basılıysa kırmızı, hover-benzeri arka plan; normal halde koyu panel rengi
+    auto* delFill = vs.deleteBtnPressed ? m_deleteBrush : m_panelBgBrush;
     m_renderTarget->FillRoundedRectangle(delRR, delFill);
-    m_renderTarget->DrawRoundedRectangle(delRR, m_separatorBrush, 1.0f);
+    // Kenar: normal halde ince kırmızı ton, basılıysa daha parlak
+    m_renderTarget->DrawRoundedRectangle(delRR, vs.deleteBtnPressed ? m_deleteBrush : m_separatorBrush, 1.0f);
 
-    // Çöp kutusu simgesi (U+1F5D1)
-    m_renderTarget->DrawText(L"\xD83D\xDDD1", 2, m_textFormat, m_deleteBtnRect, m_whiteBrush);
+    // Çöp kutusu simgesi — dolu gövde + kapak (path geometry)
+    {
+        auto* tr = m_renderTarget;
+        float cx = (delX0 + delX1) * 0.5f;
+        float cy = (y0 + y1) * 0.5f;
+        const float sw = 1.8f;
+
+        // Sap: U şekli, kapak üzerinde
+        const float hW = 3.5f, hTop = cy - 11.0f, lidY = cy - 7.5f;
+        tr->DrawLine({cx - hW, lidY}, {cx - hW, hTop}, m_whiteBrush, sw);
+        tr->DrawLine({cx - hW, hTop}, {cx + hW, hTop}, m_whiteBrush, sw);
+        tr->DrawLine({cx + hW, hTop}, {cx + hW, lidY}, m_whiteBrush, sw);
+
+        // Kapak: kalın yatay çizgi
+        tr->DrawLine({cx - 9.0f, lidY}, {cx + 9.0f, lidY}, m_whiteBrush, sw + 0.6f);
+
+        // Gövde: dolu yuvarlatılmış dikdörtgen
+        const float bW = 7.5f, bTop = lidY + 2.5f, bBot = cy + 9.0f;
+        D2D1_RECT_F bodyR = D2D1::RectF(cx - bW, bTop, cx + bW, bBot);
+        D2D1_ROUNDED_RECT bodyRR = { bodyR, 2.5f, 2.5f };
+        {
+            float op = m_whiteBrush->GetOpacity();
+            m_whiteBrush->SetOpacity(op * 0.85f);
+            tr->FillRoundedRectangle(bodyRR, m_whiteBrush);
+            m_whiteBrush->SetOpacity(op);
+        }
+
+        // Gövde üstü kapak ile birleşim — ince dikdörtgen
+        tr->FillRectangle(D2D1::RectF(cx - bW, bTop - 1.0f, cx + bW, bTop + 2.0f), m_whiteBrush);
+
+        // Gövde içi dikey çizgiler (koyu, gövde dolgusunun üzerinde)
+        auto* bg = vs.deleteBtnPressed ? m_deleteBrush : m_panelBgBrush;
+        const float lineTop = bTop + 3.5f, lineBot = bBot - 2.0f;
+        tr->DrawLine({cx - 2.5f, lineTop}, {cx - 2.5f, lineBot}, bg, 1.5f);
+        tr->DrawLine({cx + 2.5f, lineTop}, {cx + 2.5f, lineBot}, bg, 1.5f);
+    }
 }
 
 // ─── Ana Render ───────────────────────────────────────────────────────────────
@@ -833,6 +873,8 @@ void Renderer::Render(const ViewState& vs, const ImageInfo* info)
     DrawInfoButton(vs);  // Info panelinin üstünde çizilir
     DrawEditToolbar(vs); // Görüntü üstü merkez — hover'da beliren döndür butonları
     DrawSaveBar(vs);     // Alt orta — kaydedilmemiş değişiklik varsa görünür
+    DrawDeleteConfirmDialog(vs, info); // Modal dialog — en üst katman
+    DrawResizeDialog(vs);              // Resize modal — en üst katman
 
     // Zoom indicator: sağ alt köşe (alpha fade)
     if (vs.zoomIndicatorAlpha > 0.01f && m_textFormat && m_whiteBrush && m_overlayBrush)
@@ -962,6 +1004,36 @@ static void DrawRotateIcon(ID2D1HwndRenderTarget* rt, ID2D1Factory* factory,
     }
 }
 
+// Yeniden boyutlandır ikonu — 4 köşeye diyagonal oklar (köşegen ölçek sembolü).
+// cx,cy: buton merkezi; strokeW: çizgi kalınlığı.
+static void DrawResizeIcon(ID2D1HwndRenderTarget* rt, ID2D1SolidColorBrush* brush,
+                            float cx, float cy, float strokeW)
+{
+    constexpr float sq2      = 0.70710678f;   // 1/√2
+    constexpr float shaftEnd = 8.5f;          // ok ucunun merkezden uzaklığı
+    constexpr float shaftBeg = 2.5f;          // ok gövdesinin merkezden başlangıcı
+    constexpr float arrowH   = 3.2f;          // ok başı yarı genişliği
+
+    const float dx[] = {-sq2,  sq2, -sq2, sq2};
+    const float dy[] = {-sq2, -sq2,  sq2, sq2};
+
+    for (int i = 0; i < 4; ++i)
+    {
+        float ddx = dx[i], ddy = dy[i];
+        float tipX  = cx + ddx * shaftEnd,   tipY  = cy + ddy * shaftEnd;
+        float baseX = cx + ddx * (shaftEnd - arrowH * 1.1f),
+              baseY = cy + ddy * (shaftEnd - arrowH * 1.1f);
+        float px = -ddy * arrowH, py = ddx * arrowH;
+
+        // Gövde çizgisi
+        rt->DrawLine({cx + ddx * shaftBeg, cy + ddy * shaftBeg}, {tipX, tipY}, brush, strokeW);
+
+        // Ok başı
+        rt->DrawLine({tipX, tipY}, {baseX + px, baseY + py}, brush, strokeW);
+        rt->DrawLine({tipX, tipY}, {baseX - px, baseY - py}, brush, strokeW);
+    }
+}
+
 void Renderer::DrawEditToolbar(const ViewState& vs)
 {
     m_editToolbarVisible = false;
@@ -984,7 +1056,8 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
     constexpr float kMarginTop = 16.0f;
     constexpr float kStrokeW   = 2.2f;
 
-    const float totalW = kBtnSize * 2.0f + kGap;
+    // 3 buton: ↺ CCW | ↻ CW | ⤢ Resize
+    const float totalW = kBtnSize * 3.0f + kGap * 2.0f;
     const float startX = (availW - totalW) * 0.5f;
     const float btnY   = kMarginTop;
 
@@ -1007,7 +1080,7 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
         DrawRotateIcon(m_renderTarget, m_factory, m_whiteBrush, cx, cy, false, kStrokeW);
     }
 
-    // ↻ Döndür CW — sağ buton
+    // ↻ Döndür CW — orta buton
     const float btn2X = startX + kBtnSize + kGap;
     m_editBtnRotRRect = D2D1::RectF(btn2X, btnY, btn2X + kBtnSize, btnY + kBtnSize);
     {
@@ -1017,6 +1090,18 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
         float cx = btn2X + kBtnSize * 0.5f;
         float cy = btnY  + kBtnSize * 0.5f;
         DrawRotateIcon(m_renderTarget, m_factory, m_whiteBrush, cx, cy, true, kStrokeW);
+    }
+
+    // ⤢ Yeniden Boyutlandır — sağ buton
+    const float btn3X = btn2X + kBtnSize + kGap;
+    m_editBtnResizeRect = D2D1::RectF(btn3X, btnY, btn3X + kBtnSize, btnY + kBtnSize);
+    {
+        D2D1_ROUNDED_RECT rr = { m_editBtnResizeRect, kBtnRadius, kBtnRadius };
+        m_renderTarget->FillRoundedRectangle(rr,
+            vs.editBtnResizePressed ? m_activeBrush : m_panelBgBrush);
+        float cx = btn3X + kBtnSize * 0.5f;
+        float cy = btnY  + kBtnSize * 0.5f;
+        DrawResizeIcon(m_renderTarget, m_whiteBrush, cx, cy, kStrokeW);
     }
 
     m_panelBgBrush->SetOpacity(savedPanelOp);
@@ -1098,6 +1183,353 @@ void Renderer::DrawSaveBar(const ViewState& vs)
     DrawBtn(m_saveBtnBrush,    L"Kaydet",       m_saveBarSaveRect);
     DrawBtn(m_separatorBrush,  L"Kaydetme",     m_saveBarDiscardRect);
     DrawBtn(m_overlayBrush,    L"Ayr\u0131 Kaydet",  m_saveBarSaveAsRect);
+}
+
+// ─── Silme Onay / Uyarı Dialogu ──────────────────────────────────────────────
+
+void Renderer::DrawDeleteConfirmDialog(const ViewState& vs, const ImageInfo* info)
+{
+    m_dlgVisible = false;
+    if (!vs.showDeleteConfirmDialog && !vs.showUnsavedWarningDialog) return;
+    if (!m_panelBgBrush || !m_separatorBrush || !m_whiteBrush || !m_grayBrush
+     || !m_deleteBrush  || !m_overlayBrush   || !m_btnFormat  || !m_labelFormat) return;
+
+    m_dlgVisible = true;
+
+    D2D1_SIZE_F sz = m_renderTarget->GetSize();
+
+    // Tam ekran yarı saydam backdrop
+    float savedOp = m_overlayBrush->GetOpacity();
+    m_overlayBrush->SetOpacity(0.72f);
+    m_renderTarget->FillRectangle(D2D1::RectF(0, 0, sz.width, sz.height), m_overlayBrush);
+    m_overlayBrush->SetOpacity(savedOp);
+
+    const bool isWarning = vs.showUnsavedWarningDialog;
+
+    constexpr float kDlgW    = 380.0f;
+    constexpr float kDlgH    = 168.0f;
+    constexpr float kRadii   = 12.0f;
+    constexpr float kPadX    = 20.0f;
+    constexpr float kPadY    = 20.0f;
+    constexpr float kBtnH    = 38.0f;
+    constexpr float kBtnGap  = 10.0f;
+
+    const float dlgLeft   = (sz.width  - kDlgW) * 0.5f;
+    const float dlgTop    = (sz.height - kDlgH) * 0.5f;
+    const float dlgRight  = dlgLeft + kDlgW;
+    const float dlgBottom = dlgTop  + kDlgH;
+
+    // Dialog arka planı
+    D2D1_ROUNDED_RECT dlgRR = { D2D1::RectF(dlgLeft, dlgTop, dlgRight, dlgBottom), kRadii, kRadii };
+    m_renderTarget->FillRoundedRectangle(dlgRR, m_panelBgBrush);
+    m_renderTarget->DrawRoundedRectangle(dlgRR, m_separatorBrush, 1.0f);
+
+    // Başlık
+    const wchar_t* title   = isWarning ? L"Silinemedi" : L"Fotoğrafı Sil";
+    D2D1_RECT_F titleRect  = D2D1::RectF(dlgLeft + kPadX, dlgTop + kPadY,
+                                          dlgRight - kPadX, dlgTop + kPadY + 22.0f);
+    m_renderTarget->DrawText(title, static_cast<UINT32>(wcslen(title)),
+                              m_valueFormat, titleRect, m_whiteBrush);
+
+    // Mesaj metni
+    const wchar_t* msg;
+    std::wstring dynMsg;
+    if (isWarning)
+    {
+        msg = L"Bu fotoğraf üzerinde kaydedilmemiş değişiklikler var.\n"
+              L"Önce değişiklikleri kaydedin veya iptal edin.";
+    }
+    else
+    {
+        if (info && !info->filename.empty())
+            dynMsg = L"“" + info->filename + L"” dosyasını Geri Dönüşüm Kutusu'na taşımak istediğinize emin misiniz?";
+        else
+            dynMsg = L"Bu fotoğrafı Geri Dönüşüm Kutusu'na taşımak istediğinize emin misiniz?";
+        msg = dynMsg.c_str();
+    }
+    D2D1_RECT_F msgRect = D2D1::RectF(dlgLeft + kPadX, dlgTop + kPadY + 28.0f,
+                                       dlgRight - kPadX, dlgBottom - kBtnH - kPadY - 8.0f);
+    m_renderTarget->DrawText(msg, static_cast<UINT32>(wcslen(msg)),
+                              m_labelFormat, msgRect, m_grayBrush);
+
+    // Butonlar — alt kısım
+    const float btnTop    = dlgBottom - kPadY - kBtnH;
+    const float btnBottom = btnTop + kBtnH;
+
+    auto DrawDlgBtn = [&](D2D1_RECT_F& outRect, float left, float right,
+                           ID2D1SolidColorBrush* bg, const wchar_t* label, int btnId)
+    {
+        outRect = D2D1::RectF(left, btnTop, right, btnBottom);
+        D2D1_ROUNDED_RECT rr = { outRect, 7.0f, 7.0f };
+        m_renderTarget->FillRoundedRectangle(rr, bg);
+
+        if (vs.deleteDlgPressedBtn == btnId)
+        {
+            float op = m_overlayBrush->GetOpacity();
+            m_overlayBrush->SetOpacity(0.20f);
+            m_renderTarget->FillRoundedRectangle(rr, m_overlayBrush);
+            m_overlayBrush->SetOpacity(op);
+        }
+        else if (vs.deleteDlgHoverBtn == btnId)
+        {
+            float op = m_activeBrush->GetOpacity();
+            m_activeBrush->SetOpacity(0.30f);
+            m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+            m_activeBrush->SetOpacity(op);
+        }
+
+        m_renderTarget->DrawText(label, static_cast<UINT32>(wcslen(label)),
+                                  m_btnFormat, outRect, m_whiteBrush);
+    };
+
+    if (isWarning)
+    {
+        // Tek buton: Tamam
+        float btnLeft  = dlgLeft  + kPadX;
+        float btnRight = dlgRight - kPadX;
+        m_dlgCancelRect = {};
+        DrawDlgBtn(m_dlgDeleteRect, btnLeft, btnRight, m_separatorBrush, L"Tamam", 2);
+    }
+    else
+    {
+        // İki buton: İptal | Sil
+        float totalW  = kDlgW - 2.0f * kPadX;
+        float btnW    = (totalW - kBtnGap) * 0.5f;
+        float btn1L   = dlgLeft + kPadX;
+        float btn1R   = btn1L + btnW;
+        float btn2L   = btn1R + kBtnGap;
+        float btn2R   = dlgRight - kPadX;
+
+        DrawDlgBtn(m_dlgCancelRect, btn1L, btn1R, m_separatorBrush, L"İptal", 1);
+        DrawDlgBtn(m_dlgDeleteRect, btn2L, btn2R, m_deleteBrush,    L"Sil",      2);
+    }
+}
+
+// ─── Yeniden Boyutlandır Dialogu ─────────────────────────────────────────────
+// Buton ID'leri: 1=İptal, 2=Uygula, 3=px modu, 4=% modu,
+//                5=W azalt, 6=W artır, 7=H azalt, 8=H artır, 9=oran kilidi
+
+void Renderer::DrawResizeDialog(const ViewState& vs)
+{
+    m_resizeDlgVisible = false;
+    if (!vs.showResizeDialog) return;
+    if (!m_panelBgBrush || !m_separatorBrush || !m_whiteBrush || !m_grayBrush
+     || !m_overlayBrush  || !m_btnFormat     || !m_labelFormat || !m_valueFormat
+     || !m_activeBrush   || !m_saveBtnBrush) return;
+
+    m_resizeDlgVisible = true;
+
+    D2D1_SIZE_F sz = m_renderTarget->GetSize();
+
+    // Tam ekran yarı saydam backdrop
+    {
+        float op = m_overlayBrush->GetOpacity();
+        m_overlayBrush->SetOpacity(0.72f);
+        m_renderTarget->FillRectangle(D2D1::RectF(0, 0, sz.width, sz.height), m_overlayBrush);
+        m_overlayBrush->SetOpacity(op);
+    }
+
+    constexpr float kDlgW    = 420.0f;
+    constexpr float kDlgH    = 252.0f;
+    constexpr float kRadii   = 12.0f;
+    constexpr float kPadX    = 20.0f;
+    constexpr float kPadY    = 20.0f;
+    constexpr float kBtnH    = 36.0f;
+    constexpr float kBtnGap  = 10.0f;
+    constexpr float kRowH    = 32.0f;
+    constexpr float kSmBtnW  = 28.0f;
+    constexpr float kSmBtnH  = 28.0f;
+
+    const float dlgLeft   = (sz.width  - kDlgW) * 0.5f;
+    const float dlgTop    = (sz.height - kDlgH) * 0.5f;
+    const float dlgRight  = dlgLeft + kDlgW;
+    const float dlgBottom = dlgTop  + kDlgH;
+
+    // Dialog arka planı
+    D2D1_ROUNDED_RECT dlgRR = { D2D1::RectF(dlgLeft, dlgTop, dlgRight, dlgBottom), kRadii, kRadii };
+    m_renderTarget->FillRoundedRectangle(dlgRR, m_panelBgBrush);
+    m_renderTarget->DrawRoundedRectangle(dlgRR, m_separatorBrush, 1.0f);
+
+    // Başlık
+    {
+        const wchar_t* title = L"Yeniden Boyutlandır";
+        D2D1_RECT_F r = D2D1::RectF(dlgLeft + kPadX, dlgTop + kPadY,
+                                      dlgRight - kPadX, dlgTop + kPadY + 22.0f);
+        m_renderTarget->DrawText(title, static_cast<UINT32>(wcslen(title)),
+                                  m_valueFormat, r, m_whiteBrush);
+    }
+
+    // ── Mod toggle (px / %) ─────────────────────────────────────────────────
+    const float toggleY  = dlgTop + 58.0f;
+    const float toggleH  = 28.0f;
+    const float toggleW  = 54.0f;
+
+    auto DrawModeBtn = [&](D2D1_RECT_F& out, float x, const wchar_t* lbl, int id, bool active) {
+        out = D2D1::RectF(x, toggleY, x + toggleW, toggleY + toggleH);
+        D2D1_ROUNDED_RECT rr = { out, 6.0f, 6.0f };
+        auto* bg = active ? m_activeBrush : m_separatorBrush;
+        if (vs.resizeDlgHoverBtn == id && !active) {
+            float op = m_activeBrush->GetOpacity();
+            m_activeBrush->SetOpacity(0.35f);
+            m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+            m_activeBrush->SetOpacity(op);
+        } else {
+            m_renderTarget->FillRoundedRectangle(rr, bg);
+        }
+        m_renderTarget->DrawText(lbl, static_cast<UINT32>(wcslen(lbl)),
+                                  m_btnFormat, out, m_whiteBrush);
+    };
+
+    DrawModeBtn(m_resizeDlgModePxRect,  dlgLeft + kPadX,            L"px", 3, vs.resizeMode == 0);
+    DrawModeBtn(m_resizeDlgModePctRect, dlgLeft + kPadX + toggleW + 6.0f, L"%",  4, vs.resizeMode == 1);
+
+    // ── En-boy oranı kilidi ─────────────────────────────────────────────────
+    {
+        const float lockX = dlgRight - kPadX - 120.0f;
+        m_resizeDlgLockRect = D2D1::RectF(lockX, toggleY, dlgRight - kPadX, toggleY + toggleH);
+        D2D1_ROUNDED_RECT rr = { m_resizeDlgLockRect, 6.0f, 6.0f };
+        auto* bg = vs.resizeLockAspect ? m_activeBrush : m_separatorBrush;
+        if (vs.resizeDlgHoverBtn == 9 && !vs.resizeLockAspect) {
+            float op = m_activeBrush->GetOpacity();
+            m_activeBrush->SetOpacity(0.35f);
+            m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+            m_activeBrush->SetOpacity(op);
+        } else {
+            m_renderTarget->FillRoundedRectangle(rr, bg);
+        }
+        const wchar_t* lockLbl = L"⛓ Oran koru";
+        m_renderTarget->DrawText(lockLbl, static_cast<UINT32>(wcslen(lockLbl)),
+                                  m_btnFormat, m_resizeDlgLockRect, m_whiteBrush);
+    }
+
+    // ── Alan satırı (W veya Yüzde / H) ─────────────────────────────────────
+    const float labelX  = dlgLeft + kPadX;
+    const float labelW  = 80.0f;
+    const float minusX  = labelX + labelW + 4.0f;
+    const float valX    = minusX + kSmBtnW + 4.0f;
+    const float valW    = 100.0f;
+    const float plusX   = valX + valW + 4.0f;
+
+    auto DrawFieldRow = [&](D2D1_RECT_F& decOut, D2D1_RECT_F& incOut,
+                             float rowTop, int decId, int incId,
+                             const wchar_t* labelTxt, const wchar_t* valueTxt)
+    {
+        // Etiket
+        D2D1_RECT_F labelR = D2D1::RectF(labelX, rowTop, labelX + labelW, rowTop + kRowH);
+        m_renderTarget->DrawText(labelTxt, static_cast<UINT32>(wcslen(labelTxt)),
+                                  m_labelFormat, labelR, m_grayBrush);
+
+        // [−] butonu
+        decOut = D2D1::RectF(minusX, rowTop + 2.0f, minusX + kSmBtnW, rowTop + 2.0f + kSmBtnH);
+        {
+            D2D1_ROUNDED_RECT rr = { decOut, 6.0f, 6.0f };
+            bool pressed = vs.resizeDlgPressedBtn == decId;
+            bool hover   = vs.resizeDlgHoverBtn == decId;
+            auto* bg = pressed ? m_activeBrush : (hover ? m_separatorBrush : m_separatorBrush);
+            m_renderTarget->FillRoundedRectangle(rr, bg);
+            if (hover && !pressed) {
+                float op = m_activeBrush->GetOpacity();
+                m_activeBrush->SetOpacity(0.25f);
+                m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+                m_activeBrush->SetOpacity(op);
+            }
+            m_renderTarget->DrawText(L"−", 1, m_btnFormat, decOut, m_whiteBrush);
+        }
+
+        // Değer göstergesi
+        D2D1_RECT_F valR = D2D1::RectF(valX, rowTop, valX + valW, rowTop + kRowH);
+        m_renderTarget->DrawText(valueTxt, static_cast<UINT32>(wcslen(valueTxt)),
+                                  m_btnFormat, valR, m_whiteBrush);
+
+        // [+] butonu
+        incOut = D2D1::RectF(plusX, rowTop + 2.0f, plusX + kSmBtnW, rowTop + 2.0f + kSmBtnH);
+        {
+            D2D1_ROUNDED_RECT rr = { incOut, 6.0f, 6.0f };
+            bool pressed = vs.resizeDlgPressedBtn == incId;
+            bool hover   = vs.resizeDlgHoverBtn == incId;
+            m_renderTarget->FillRoundedRectangle(rr, m_separatorBrush);
+            if (hover && !pressed) {
+                float op = m_activeBrush->GetOpacity();
+                m_activeBrush->SetOpacity(0.25f);
+                m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+                m_activeBrush->SetOpacity(op);
+            } else if (pressed) {
+                float op = m_activeBrush->GetOpacity();
+                m_activeBrush->SetOpacity(0.6f);
+                m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+                m_activeBrush->SetOpacity(op);
+            }
+            m_renderTarget->DrawText(L"+", 1, m_btnFormat, incOut, m_whiteBrush);
+        }
+    };
+
+    const float row1Top = dlgTop + 100.0f;
+    const float row2Top = dlgTop + 142.0f;
+
+    if (vs.resizeMode == 0)
+    {
+        // Piksel modu: Genişlik + Yükseklik
+        wchar_t wBuf[32], hBuf[32];
+        _snwprintf_s(wBuf, 32, _TRUNCATE, L"%d px", vs.resizeW);
+        _snwprintf_s(hBuf, 32, _TRUNCATE, L"%d px", vs.resizeH);
+        DrawFieldRow(m_resizeDlgWDecRect, m_resizeDlgWIncRect, row1Top, 5, 6, L"Genişlik",   wBuf);
+        DrawFieldRow(m_resizeDlgHDecRect, m_resizeDlgHIncRect, row2Top, 7, 8, L"Yükseklik",  hBuf);
+        m_resizeDlgHDecRect = {};  // px modunda H row mevcut — sıfırlamıyoruz
+    }
+    else
+    {
+        // Yüzde modu: tek satır yüzde + sonuç bilgisi
+        wchar_t pBuf[32];
+        _snwprintf_s(pBuf, 32, _TRUNCATE, L"%d %%", vs.resizePct);
+        DrawFieldRow(m_resizeDlgWDecRect, m_resizeDlgWIncRect, row1Top, 5, 6, L"Yüzde", pBuf);
+        m_resizeDlgHDecRect = {};
+        m_resizeDlgHIncRect = {};
+
+        // Sonuç piksel boyutu
+        wchar_t resBuf[64];
+        _snwprintf_s(resBuf, 64, _TRUNCATE, L"→  %d × %d px", vs.resizeW, vs.resizeH);
+        D2D1_RECT_F resR = D2D1::RectF(labelX, row2Top, dlgRight - kPadX, row2Top + kRowH);
+        m_renderTarget->DrawText(resBuf, static_cast<UINT32>(wcslen(resBuf)),
+                                  m_labelFormat, resR, m_grayBrush);
+    }
+
+    // Ayraç çizgisi
+    const float sepY = dlgBottom - kBtnH - kPadY - 8.0f;
+    m_renderTarget->DrawLine({dlgLeft + kPadX, sepY}, {dlgRight - kPadX, sepY},
+                              m_separatorBrush, 1.0f);
+
+    // ── Alt butonlar: İptal | Uygula ────────────────────────────────────────
+    const float btnTop    = dlgBottom - kPadY - kBtnH;
+    const float btnBottom = btnTop + kBtnH;
+    const float totalBtnW = kDlgW - 2.0f * kPadX;
+    const float btnW      = (totalBtnW - kBtnGap) * 0.5f;
+    const float btn1L     = dlgLeft + kPadX;
+    const float btn1R     = btn1L + btnW;
+    const float btn2L     = btn1R + kBtnGap;
+    const float btn2R     = dlgRight - kPadX;
+
+    auto DrawMainBtn = [&](D2D1_RECT_F& out, float left, float right,
+                            ID2D1SolidColorBrush* bg, const wchar_t* lbl, int id) {
+        out = D2D1::RectF(left, btnTop, right, btnBottom);
+        D2D1_ROUNDED_RECT rr = { out, 7.0f, 7.0f };
+        m_renderTarget->FillRoundedRectangle(rr, bg);
+        if (vs.resizeDlgPressedBtn == id) {
+            float op = m_overlayBrush->GetOpacity();
+            m_overlayBrush->SetOpacity(0.20f);
+            m_renderTarget->FillRoundedRectangle(rr, m_overlayBrush);
+            m_overlayBrush->SetOpacity(op);
+        } else if (vs.resizeDlgHoverBtn == id) {
+            float op = m_activeBrush->GetOpacity();
+            m_activeBrush->SetOpacity(0.25f);
+            m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+            m_activeBrush->SetOpacity(op);
+        }
+        m_renderTarget->DrawText(lbl, static_cast<UINT32>(wcslen(lbl)),
+                                  m_btnFormat, out, m_whiteBrush);
+    };
+
+    DrawMainBtn(m_resizeDlgCancelRect, btn1L, btn1R, m_separatorBrush, L"İptal",  1);
+    DrawMainBtn(m_resizeDlgApplyRect,  btn2L, btn2R, m_saveBtnBrush,   L"Uygula", 2);
 }
 
 void Renderer::Resize(UINT width, UINT height)

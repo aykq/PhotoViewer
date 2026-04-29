@@ -127,10 +127,29 @@ struct ViewState
     float editToolbarAlpha     = 0.0f;  // edit toolbar görünürlüğü (hover fade, 0=gizli 1=tam)
     bool  editBtnRotLPressed   = false;  // ↺ (CCW) butonu basılı
     bool  editBtnRotRPressed   = false;  // ↻ (CW)  butonu basılı
+    bool  editBtnResizePressed = false;  // Resize butonu basılı (press highlight)
+
+    // Yeniden boyutlandır dialog
+    bool  showResizeDialog     = false;
+    int   resizeMode           = 0;     // 0=piksel, 1=yüzde
+    int   resizeW              = 0;     // hedef genişlik (piksel)
+    int   resizeH              = 0;     // hedef yükseklik (piksel)
+    int   resizePct            = 100;   // yüzde değeri (% modunda)
+    int   resizeOrigW          = 0;     // dialog açıldığında orijinal genişlik
+    int   resizeOrigH          = 0;     // dialog açıldığında orijinal yükseklik
+    bool  resizeLockAspect     = true;  // en-boy oranı kilidi
+    int   resizeDlgHoverBtn    = 0;     // hover edilen buton ID (0=yok)
+    int   resizeDlgPressedBtn  = 0;     // basılı buton ID
 
     // Save bar buton durumları (0=yok, 1=Kaydet, 2=Kaydetme, 3=Ayrı Kaydet)
     int   saveBarHover         = 0;
     int   saveBarPressedBtn    = 0;
+
+    // Silme onay dialogu
+    bool  showDeleteConfirmDialog  = false;  // "Geri Dönüşüm Kutusu'na taşı?" onay ekranı
+    bool  showUnsavedWarningDialog = false;  // "Kaydedilmemiş değişiklik" uyarı ekranı
+    int   deleteDlgHoverBtn        = 0;      // 0=yok, 1=İptal/Tamam, 2=Sil
+    int   deleteDlgPressedBtn      = 0;      // basılı buton (press highlight)
 };
 
 // Renderer: Direct2D render target yönetimi + WIC görüntü yükleme
@@ -209,9 +228,29 @@ public:
     D2D1_RECT_F GetSaveBarSaveAsRect()  const { return m_saveBarSaveAsRect; }
     bool        IsSaveBarVisible()      const { return m_saveBarVisible; }
 
-    // Delete butonu rect — info butonunun sağında; WndProc tıklama testi için
+    // Delete butonu rect — info butonunun solunda; WndProc tıklama testi için
     D2D1_RECT_F GetDeleteBtnRect()    const { return m_deleteBtnRect; }
     bool        IsDeleteBtnVisible()  const { return m_deleteBtnVisible; }
+
+    // Resize butonu (edit toolbar, 3. buton) — WndProc tıklama testi için
+    D2D1_RECT_F GetEditBtnResizeRect()     const { return m_editBtnResizeRect; }
+
+    // Resize dialog rect'leri — WndProc etkileşim testi için
+    bool        IsResizeDialogVisible()    const { return m_resizeDlgVisible; }
+    D2D1_RECT_F GetResizeDlgCancelRect()   const { return m_resizeDlgCancelRect; }
+    D2D1_RECT_F GetResizeDlgApplyRect()    const { return m_resizeDlgApplyRect; }
+    D2D1_RECT_F GetResizeDlgModePxRect()   const { return m_resizeDlgModePxRect; }
+    D2D1_RECT_F GetResizeDlgModePctRect()  const { return m_resizeDlgModePctRect; }
+    D2D1_RECT_F GetResizeDlgWDecRect()     const { return m_resizeDlgWDecRect; }
+    D2D1_RECT_F GetResizeDlgWIncRect()     const { return m_resizeDlgWIncRect; }
+    D2D1_RECT_F GetResizeDlgHDecRect()     const { return m_resizeDlgHDecRect; }
+    D2D1_RECT_F GetResizeDlgHIncRect()     const { return m_resizeDlgHIncRect; }
+    D2D1_RECT_F GetResizeDlgLockRect()     const { return m_resizeDlgLockRect; }
+
+    // Silme onay dialogu buton rect'leri — WndProc hit testi için
+    D2D1_RECT_F GetDlgCancelRect() const { return m_dlgCancelRect; }
+    D2D1_RECT_F GetDlgDeleteRect() const { return m_dlgDeleteRect; }
+    bool        IsDeleteDialogVisible() const { return m_dlgVisible; }
 
     // Thumbnail strip — main.cpp tarafından yönetilir
     void LoadThumbnail(const std::wstring& path, const uint8_t* pixels, UINT w, UINT h);
@@ -247,6 +286,10 @@ private:
     // Düzenleme toolbar ve save bar
     void DrawEditToolbar(const ViewState& vs);
     void DrawSaveBar(const ViewState& vs);
+    // Silme onay / uyarı dialogu
+    void DrawDeleteConfirmDialog(const ViewState& vs, const ImageInfo* info);
+    // Yeniden boyutlandır dialogu
+    void DrawResizeDialog(const ViewState& vs);
 
     HWND                   m_hwnd         = nullptr;
     ID2D1Factory*          m_factory      = nullptr;   // Direct2D fabrikası (cihazdan bağımsız)
@@ -270,6 +313,7 @@ private:
     ID2D1SolidColorBrush*  m_panelBgBrush     = nullptr;   // #1A1A1A — panel arka planı
     ID2D1SolidColorBrush*  m_separatorBrush   = nullptr;   // #333333 — section ayraçlar + panel kenar
     ID2D1SolidColorBrush*  m_saveBtnBrush     = nullptr;   // #4CAF50 — "Kaydet" butonu accent
+    ID2D1SolidColorBrush*  m_deleteBrush      = nullptr;   // #C62828 — "Sil" butonu tehlike rengi
 
     ID2D1Bitmap*           m_bitmap       = nullptr;   // GPU'ya yüklenmiş görüntü
     std::wstring           m_imagePath;                // D2DERR_RECREATE_TARGET'ta yeniden yüklemek için
@@ -317,20 +361,38 @@ private:
     // Info paneli içerik yüksekliği — DrawInfoPanel her çizimde hesaplar
     float       m_infoPanelContentH = 0.0f;
 
-    // Edit toolbar (döndür butonları) — her Render'da güncellenir
+    // Edit toolbar (döndür + resize butonları) — her Render'da güncellenir
     D2D1_RECT_F m_editBtnRotLRect    = {};
     D2D1_RECT_F m_editBtnRotRRect    = {};
+    D2D1_RECT_F m_editBtnResizeRect  = {};
     bool        m_editToolbarVisible = false;
 
-    // Delete butonu — her Render'da güncellenir (info butonunun sağında)
+    // Delete butonu — her Render'da güncellenir (info butonunun solunda)
     D2D1_RECT_F m_deleteBtnRect    = {};
     bool        m_deleteBtnVisible = false;
+
+    // Resize dialog rect'leri — DrawResizeDialog her çizimde günceller
+    D2D1_RECT_F m_resizeDlgCancelRect   = {};
+    D2D1_RECT_F m_resizeDlgApplyRect    = {};
+    D2D1_RECT_F m_resizeDlgModePxRect   = {};
+    D2D1_RECT_F m_resizeDlgModePctRect  = {};
+    D2D1_RECT_F m_resizeDlgWDecRect     = {};
+    D2D1_RECT_F m_resizeDlgWIncRect     = {};
+    D2D1_RECT_F m_resizeDlgHDecRect     = {};
+    D2D1_RECT_F m_resizeDlgHIncRect     = {};
+    D2D1_RECT_F m_resizeDlgLockRect     = {};
+    bool        m_resizeDlgVisible      = false;
 
     // Save bar (kayıt seçenekleri) — her Render'da güncellenir
     D2D1_RECT_F m_saveBarSaveRect    = {};
     D2D1_RECT_F m_saveBarDiscardRect = {};
     D2D1_RECT_F m_saveBarSaveAsRect  = {};
     bool        m_saveBarVisible     = false;
+
+    // Silme onay dialogu buton rect'leri — her Render'da güncellenir
+    D2D1_RECT_F m_dlgCancelRect = {};
+    D2D1_RECT_F m_dlgDeleteRect = {};
+    bool        m_dlgVisible    = false;
 
 public:
     // Kaydırma sınırlaması için maksimum scroll hesabında kullanılır
