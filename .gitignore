@@ -363,6 +363,9 @@ MigrationBackup/
 FodyWeavers.xsd
 build_output.txt
 
+# VS Code local IntelliSense config (machine-specific)
+.vscode/
+
 # AI assistant working memory and configuration
 memory-bank/
 AGENTS.md
