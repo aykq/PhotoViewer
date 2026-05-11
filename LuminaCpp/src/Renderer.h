@@ -125,9 +125,16 @@ struct ViewState
     bool  editDirty            = false;  // kaydedilmemiş değişiklik var — save bar gösterilir
     bool  editIsAnimated       = false;  // animasyonlu görsel — düzenleme toolbar gizlenir
     float editToolbarAlpha     = 0.0f;  // edit toolbar görünürlüğü (hover fade, 0=gizli 1=tam)
-    bool  editBtnRotLPressed   = false;  // ↺ (CCW) butonu basılı
-    bool  editBtnRotRPressed   = false;  // ↻ (CW)  butonu basılı
-    bool  editBtnResizePressed = false;  // Resize butonu basılı (press highlight)
+    bool  editBtnRotLPressed    = false;  // ↺ (CCW) butonu basılı
+    bool  editBtnRotRPressed    = false;  // ↻ (CW)  butonu basılı
+    bool  editBtnRotFreePressed = false;  // serbest döndür butonu basılı
+    bool  editBtnResizePressed  = false;  // Resize butonu basılı (press highlight)
+
+    // Serbest döndürme dialog
+    bool  showRotateFreeDialog  = false;
+    float rotateFreeAngle       = 0.0f;  // -45..+45 derece; canlı D2D önizlemesi için
+    int   rotateFreeDlgHoverBtn = 0;     // 0=yok, 1=−1°, 2=−0.1°, 3=+0.1°, 4=+1°, 5=Sıfırla, 6=İptal, 7=Uygula
+    int   rotateFreeDlgPressBtn = 0;
 
     // Yeniden boyutlandır dialog
     bool  showResizeDialog     = false;
@@ -252,6 +259,18 @@ public:
     D2D1_RECT_F GetDlgDeleteRect() const { return m_dlgDeleteRect; }
     bool        IsDeleteDialogVisible() const { return m_dlgVisible; }
 
+    // Serbest döndürme dialog rect'leri — WndProc hit testi için
+    D2D1_RECT_F GetRotFreeDlgCoarseDecRect() const { return m_rotFreeDlgCoarseDecRect; }
+    D2D1_RECT_F GetRotFreeDlgFineDecRect()   const { return m_rotFreeDlgFineDecRect; }
+    D2D1_RECT_F GetRotFreeDlgFineIncRect()   const { return m_rotFreeDlgFineIncRect; }
+    D2D1_RECT_F GetRotFreeDlgCoarseIncRect() const { return m_rotFreeDlgCoarseIncRect; }
+    D2D1_RECT_F GetRotFreeDlgResetRect()     const { return m_rotFreeDlgResetRect; }
+    D2D1_RECT_F GetRotFreeDlgCancelRect()    const { return m_rotFreeDlgCancelRect; }
+    D2D1_RECT_F GetRotFreeDlgApplyRect()     const { return m_rotFreeDlgApplyRect; }
+    D2D1_RECT_F GetRotFreeDlgSliderRect()    const { return m_rotFreeDlgSliderRect; }
+    bool        IsRotFreeDlgVisible()        const { return m_rotFreeDlgVisible; }
+    D2D1_RECT_F GetEditBtnRotFreeRect()      const { return m_editBtnRotFreeRect; }
+
     // Thumbnail strip — main.cpp tarafından yönetilir
     void LoadThumbnail(const std::wstring& path, const uint8_t* pixels, UINT w, UINT h);
     bool HasThumbnail(const std::wstring& path) const;
@@ -290,6 +309,8 @@ private:
     void DrawDeleteConfirmDialog(const ViewState& vs, const ImageInfo* info);
     // Yeniden boyutlandır dialogu
     void DrawResizeDialog(const ViewState& vs);
+    // Serbest döndürme dialogu
+    void DrawRotateFreeDialog(const ViewState& vs);
 
     HWND                   m_hwnd         = nullptr;
     ID2D1Factory*          m_factory      = nullptr;   // Direct2D fabrikası (cihazdan bağımsız)
@@ -382,6 +403,18 @@ private:
     D2D1_RECT_F m_resizeDlgHIncRect     = {};
     D2D1_RECT_F m_resizeDlgLockRect     = {};
     bool        m_resizeDlgVisible      = false;
+
+    // Serbest döndürme dialog rect'leri — DrawRotateFreeDialog her çizimde günceller
+    D2D1_RECT_F m_rotFreeDlgCoarseDecRect = {};  // −1°
+    D2D1_RECT_F m_rotFreeDlgFineDecRect   = {};  // −0.1°
+    D2D1_RECT_F m_rotFreeDlgFineIncRect   = {};  // +0.1°
+    D2D1_RECT_F m_rotFreeDlgCoarseIncRect = {};  // +1°
+    D2D1_RECT_F m_rotFreeDlgResetRect     = {};
+    D2D1_RECT_F m_rotFreeDlgCancelRect    = {};
+    D2D1_RECT_F m_rotFreeDlgApplyRect     = {};
+    D2D1_RECT_F m_rotFreeDlgSliderRect    = {};  // slider rail alanı
+    D2D1_RECT_F m_editBtnRotFreeRect      = {};  // toolbar: serbest döndür butonu
+    bool        m_rotFreeDlgVisible       = false;
 
     // Save bar (kayıt seçenekleri) — her Render'da güncellenir
     D2D1_RECT_F m_saveBarSaveRect    = {};

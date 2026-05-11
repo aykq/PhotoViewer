@@ -445,8 +445,9 @@ static bool  g_clickIsDeleteBtn  = false;
 static bool  g_clickInPanel      = false;  // Panel alanı tıklaması — drag/zoom engellenir
 static bool  g_clickInStrip      = false;  // Strip veya toggle tıklaması
 static bool  g_mouseTracking     = false;  // TrackMouseEvent kaydı aktif mi
-static bool  g_clickInToolbar    = false;  // Edit toolbar butonu tıklaması
-static bool  g_clickInSaveBar    = false;  // Save bar butonu tıklaması
+static bool  g_clickInToolbar            = false;  // Edit toolbar butonu tıklaması
+static bool  g_clickInSaveBar            = false;  // Save bar butonu tıklaması
+static bool  g_rotFreeDlgSliderDragging  = false;  // Serbest döndürme slider sürükleniyor
 
 
 // --- Yardımcı: arrow zone hit-test ---
@@ -1147,6 +1148,60 @@ static void RotatePixels90CCW(std::vector<uint8_t>& pixels, UINT& width, UINT& h
     height = newH;
 }
 
+// Serbest açı döndürme (bilineer): ters haritalama ile kaynak piksel örneklenir.
+// Çıkış boyutu girişle aynı; kapsam dışı pikseller siyah (0) bırakılır.
+static void RotatePixelsFree(std::vector<uint8_t>& pixels, UINT width, UINT height, float angleDeg)
+{
+    if (fabsf(angleDeg) < 0.001f) return;
+
+    const float rad  = -angleDeg * 3.14159265f / 180.0f;  // negatif: ters dönüşüm için
+    const float cosA = cosf(rad);
+    const float sinA = sinf(rad);
+    const float cx   = (width  - 1) * 0.5f;
+    const float cy   = (height - 1) * 0.5f;
+
+    std::vector<uint8_t> dst(static_cast<size_t>(width) * height * 4, 0);
+
+    for (UINT dy = 0; dy < height; ++dy)
+    {
+        const float fy = dy - cy;
+        for (UINT dx = 0; dx < width; ++dx)
+        {
+            const float fx = dx - cx;
+            // Ters döndürme: hedef pikselin kaynaktaki konumunu bul
+            const float sx = cosA * fx - sinA * fy + cx;
+            const float sy = sinA * fx + cosA * fy + cy;
+
+            if (sx >= 0.0f && sx < static_cast<float>(width  - 1) &&
+                sy >= 0.0f && sy < static_cast<float>(height - 1))
+            {
+                const int   x0 = static_cast<int>(sx);
+                const int   y0 = static_cast<int>(sy);
+                const float tx = sx - x0;
+                const float ty = sy - y0;
+
+                const uint8_t* p00 = &pixels[(static_cast<size_t>(y0)     * width + x0)     * 4];
+                const uint8_t* p10 = &pixels[(static_cast<size_t>(y0)     * width + x0 + 1) * 4];
+                const uint8_t* p01 = &pixels[(static_cast<size_t>(y0 + 1) * width + x0)     * 4];
+                const uint8_t* p11 = &pixels[(static_cast<size_t>(y0 + 1) * width + x0 + 1) * 4];
+                uint8_t* d = &dst[(static_cast<size_t>(dy) * width + dx) * 4];
+
+                for (int c = 0; c < 4; ++c)
+                {
+                    float v = p00[c] * (1.0f - tx) * (1.0f - ty)
+                            + p10[c] *          tx  * (1.0f - ty)
+                            + p01[c] * (1.0f - tx) *          ty
+                            + p11[c] *          tx  *          ty;
+                    d[c] = static_cast<uint8_t>(v + 0.5f);
+                }
+            }
+        }
+    }
+
+    pixels = std::move(dst);
+    // Genişlik ve yükseklik değişmez
+}
+
 // --- Dosya yardımcıları ---
 
 static std::wstring GetFormatFromPath(const std::wstring& path)
@@ -1265,6 +1320,77 @@ static void DoRotateCCW(HWND hwnd)
     RotatePixels90CCW(g_edit.pixels, g_edit.width, g_edit.height);
     g_edit.isDirty         = true;
     g_viewState.editDirty  = true;
+    g_viewState.editToolbarAlpha = 1.0f;
+    KillTimer(hwnd, kEditToolbarFadeTimerID);
+    KillTimer(hwnd, kEditToolbarIdleTimerID);
+    DoApplyEdit(hwnd);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// Piksel tamponunu merkezden kırp — boyut küçülür, orijinal buffer'ın orta bölgesi alınır.
+static void CropPixelsCenter(std::vector<uint8_t>& pixels, UINT& width, UINT& height,
+                              UINT newW, UINT newH)
+{
+    if (newW == 0 || newH == 0 || (newW == width && newH == height)) return;
+    const UINT x0 = (width  - newW) / 2;
+    const UINT y0 = (height - newH) / 2;
+    std::vector<uint8_t> dst(static_cast<size_t>(newW) * newH * 4);
+    for (UINT y = 0; y < newH; ++y)
+    {
+        const uint8_t* src = &pixels[((y0 + y) * width + x0) * 4];
+        uint8_t*       d   = &dst[y * newW * 4];
+        memcpy(d, src, static_cast<size_t>(newW) * 4);
+    }
+    pixels = std::move(dst);
+    width  = newW;
+    height = newH;
+}
+
+static void DoOpenRotateFreeDialog(HWND hwnd)
+{
+    if (g_edit.pixels.empty() || g_viewState.editIsAnimated) return;
+    if (g_isSaving.load()) return;
+    g_viewState.rotateFreeAngle        = 0.0f;
+    g_viewState.rotateFreeDlgHoverBtn  = 0;
+    g_viewState.rotateFreeDlgPressBtn  = 0;
+    g_viewState.showRotateFreeDialog   = true;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void DoApplyRotateFree(HWND hwnd)
+{
+    if (g_edit.pixels.empty()) return;
+    float angle = g_viewState.rotateFreeAngle;
+    g_viewState.showRotateFreeDialog  = false;
+    g_viewState.rotateFreeDlgHoverBtn = 0;
+    g_viewState.rotateFreeDlgPressBtn = 0;
+    if (fabsf(angle) < 0.001f)
+    {
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+    RotatePixelsFree(g_edit.pixels, g_edit.width, g_edit.height, angle);
+
+    // Otomatik kırpma: siyah köşeleri gider (Lightroom/ACR davranışı)
+    // crop = (W·cosθ − H·sinθ) / cos2θ,  (H·cosθ − W·sinθ) / cos2θ
+    {
+        const float rad  = fabsf(angle) * 3.14159265f / 180.0f;
+        const float cosA = cosf(rad);
+        const float sinA = sinf(rad);
+        const float cos2 = cosf(2.0f * rad);
+        if (cos2 > 0.001f)
+        {
+            const float W = static_cast<float>(g_edit.width);
+            const float H = static_cast<float>(g_edit.height);
+            const auto  cropW = static_cast<UINT>((W * cosA - H * sinA) / cos2);
+            const auto  cropH = static_cast<UINT>((H * cosA - W * sinA) / cos2);
+            if (cropW > 0 && cropH > 0 && cropW < g_edit.width && cropH < g_edit.height)
+                CropPixelsCenter(g_edit.pixels, g_edit.width, g_edit.height, cropW, cropH);
+        }
+    }
+
+    g_edit.isDirty        = true;
+    g_viewState.editDirty = true;
     g_viewState.editToolbarAlpha = 1.0f;
     KillTimer(hwnd, kEditToolbarFadeTimerID);
     KillTimer(hwnd, kEditToolbarIdleTimerID);
@@ -1621,6 +1747,47 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float mx = static_cast<float>(GET_X_LPARAM(lParam));
         float my = static_cast<float>(GET_Y_LPARAM(lParam));
 
+        // Serbest döndürme dialogu açıksa — slider/buton etkileşimi, diğerini engelle
+        if (g_viewState.showRotateFreeDialog)
+        {
+            if (g_renderer && g_renderer->IsRotFreeDlgVisible())
+            {
+                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+                if (inR(mx, my, g_renderer->GetRotFreeDlgSliderRect()))
+                {
+                    g_rotFreeDlgSliderDragging = true;
+                    SetCapture(hwnd);
+                    // Tıklanan x pozisyonundan açıyı hesapla
+                    D2D1_RECT_F sr = g_renderer->GetRotFreeDlgSliderRect();
+                    float railLeft  = sr.left  + 9.0f;
+                    float railRight = sr.right  - 9.0f;
+                    float t = (mx - railLeft) / (railRight - railLeft);
+                    float angle = t * 90.0f - 45.0f;
+                    if (angle < -45.0f) angle = -45.0f;
+                    if (angle >  45.0f) angle =  45.0f;
+                    g_viewState.rotateFreeAngle = angle;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                else
+                {
+                    int hit = 0;
+                    if      (inR(mx, my, g_renderer->GetRotFreeDlgCoarseDecRect())) hit = 1;
+                    else if (inR(mx, my, g_renderer->GetRotFreeDlgFineDecRect()))   hit = 2;
+                    else if (inR(mx, my, g_renderer->GetRotFreeDlgFineIncRect()))   hit = 3;
+                    else if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseIncRect())) hit = 4;
+                    else if (inR(mx, my, g_renderer->GetRotFreeDlgResetRect()))     hit = 5;
+                    else if (inR(mx, my, g_renderer->GetRotFreeDlgCancelRect()))    hit = 6;
+                    else if (inR(mx, my, g_renderer->GetRotFreeDlgApplyRect()))     hit = 7;
+                    g_viewState.rotateFreeDlgPressBtn = hit;
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            return 0;
+        }
+
         // Resize dialogu açıksa — buton press state güncelle, diğer etkileşimi engelle
         if (g_viewState.showResizeDialog)
         {
@@ -1696,18 +1863,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             // Edit toolbar butonu tıklaması
             if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
             {
-                D2D1_RECT_F rL  = g_renderer->GetEditBtnRotLRect();
-                D2D1_RECT_F rR  = g_renderer->GetEditBtnRotRRect();
-                D2D1_RECT_F rRz = g_renderer->GetEditBtnResizeRect();
+                D2D1_RECT_F rL   = g_renderer->GetEditBtnRotLRect();
+                D2D1_RECT_F rR   = g_renderer->GetEditBtnRotRRect();
+                D2D1_RECT_F rFr  = g_renderer->GetEditBtnRotFreeRect();
+                D2D1_RECT_F rRz  = g_renderer->GetEditBtnResizeRect();
                 bool hitL  = (mx >= rL.left  && mx <= rL.right  && my >= rL.top  && my <= rL.bottom);
                 bool hitR  = (mx >= rR.left  && mx <= rR.right  && my >= rR.top  && my <= rR.bottom);
+                bool hitFr = (mx >= rFr.left && mx <= rFr.right && my >= rFr.top && my <= rFr.bottom);
                 bool hitRz = (mx >= rRz.left && mx <= rRz.right && my >= rRz.top && my <= rRz.bottom);
-                if (hitL || hitR || hitRz)
+                if (hitL || hitR || hitFr || hitRz)
                 {
                     g_clickInToolbar = true;
-                    g_viewState.editBtnRotLPressed   = hitL;
-                    g_viewState.editBtnRotRPressed   = hitR;
-                    g_viewState.editBtnResizePressed = hitRz;
+                    g_viewState.editBtnRotLPressed    = hitL;
+                    g_viewState.editBtnRotRPressed    = hitR;
+                    g_viewState.editBtnRotFreePressed = hitFr;
+                    g_viewState.editBtnResizePressed  = hitRz;
                     InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -1793,6 +1963,46 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         float mx = static_cast<float>(GET_X_LPARAM(lParam));
         float my = static_cast<float>(GET_Y_LPARAM(lParam));
+
+        // Serbest döndürme dialogu açıksa — slider sürükleme + hover güncelle
+        if (g_viewState.showRotateFreeDialog)
+        {
+            if (g_rotFreeDlgSliderDragging && g_renderer && g_renderer->IsRotFreeDlgVisible())
+            {
+                D2D1_RECT_F sr = g_renderer->GetRotFreeDlgSliderRect();
+                float railLeft  = sr.left  + 9.0f;
+                float railRight = sr.right  - 9.0f;
+                float t = (mx - railLeft) / (railRight - railLeft);
+                float angle = t * 90.0f - 45.0f;
+                if (angle < -45.0f) angle = -45.0f;
+                if (angle >  45.0f) angle =  45.0f;
+                if (fabsf(angle - g_viewState.rotateFreeAngle) > 0.05f)
+                {
+                    g_viewState.rotateFreeAngle = angle;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            else if (g_renderer && g_renderer->IsRotFreeDlgVisible())
+            {
+                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+                int newHover = 0;
+                if      (inR(mx, my, g_renderer->GetRotFreeDlgCoarseDecRect())) newHover = 1;
+                else if (inR(mx, my, g_renderer->GetRotFreeDlgFineDecRect()))   newHover = 2;
+                else if (inR(mx, my, g_renderer->GetRotFreeDlgFineIncRect()))   newHover = 3;
+                else if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseIncRect())) newHover = 4;
+                else if (inR(mx, my, g_renderer->GetRotFreeDlgResetRect()))     newHover = 5;
+                else if (inR(mx, my, g_renderer->GetRotFreeDlgCancelRect()))    newHover = 6;
+                else if (inR(mx, my, g_renderer->GetRotFreeDlgApplyRect()))     newHover = 7;
+                if (newHover != g_viewState.rotateFreeDlgHoverBtn)
+                {
+                    g_viewState.rotateFreeDlgHoverBtn = newHover;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            return 0;
+        }
 
         // Resize dialogu açıksa — hover güncelle
         if (g_viewState.showResizeDialog)
@@ -1924,6 +2134,66 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float mx = static_cast<float>(GET_X_LPARAM(lParam));
         float my = static_cast<float>(GET_Y_LPARAM(lParam));
 
+        // Serbest döndürme dialogu açıksa — slider bırakma / buton eylemi
+        if (g_viewState.showRotateFreeDialog)
+        {
+            if (g_rotFreeDlgSliderDragging)
+            {
+                g_rotFreeDlgSliderDragging = false;
+                ReleaseCapture();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            int pressed = g_viewState.rotateFreeDlgPressBtn;
+            g_viewState.rotateFreeDlgPressBtn = 0;
+            ReleaseCapture();
+
+            if (g_renderer && g_renderer->IsRotFreeDlgVisible() && pressed != 0)
+            {
+                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+                auto clampAngle = [](float a) {
+                    return a < -45.0f ? -45.0f : (a > 45.0f ? 45.0f : a);
+                };
+                switch (pressed)
+                {
+                case 1:  // −1°
+                    if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseDecRect()))
+                        g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle - 1.0f);
+                    break;
+                case 2:  // −0.1°
+                    if (inR(mx, my, g_renderer->GetRotFreeDlgFineDecRect()))
+                        g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle - 0.1f);
+                    break;
+                case 3:  // +0.1°
+                    if (inR(mx, my, g_renderer->GetRotFreeDlgFineIncRect()))
+                        g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle + 0.1f);
+                    break;
+                case 4:  // +1°
+                    if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseIncRect()))
+                        g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle + 1.0f);
+                    break;
+                case 5:  // Sıfırla
+                    if (inR(mx, my, g_renderer->GetRotFreeDlgResetRect()))
+                        g_viewState.rotateFreeAngle = 0.0f;
+                    break;
+                case 6:  // İptal
+                    g_viewState.showRotateFreeDialog  = false;
+                    g_viewState.rotateFreeDlgHoverBtn = 0;
+                    break;
+                case 7:  // Uygula
+                    if (inR(mx, my, g_renderer->GetRotFreeDlgApplyRect()))
+                        DoApplyRotateFree(hwnd);
+                    break;
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            else
+                InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
         // Resize dialogu açıksa — buton bırakma işlemi
         if (g_viewState.showResizeDialog)
         {
@@ -2054,19 +2324,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         // Edit toolbar butonu tıklaması
         if (g_clickInToolbar)
         {
-            bool wasL  = g_viewState.editBtnRotLPressed;
-            bool wasR  = g_viewState.editBtnRotRPressed;
-            bool wasRz = g_viewState.editBtnResizePressed;
-            g_viewState.editBtnRotLPressed   = false;
-            g_viewState.editBtnRotRPressed   = false;
-            g_viewState.editBtnResizePressed = false;
+            bool wasL   = g_viewState.editBtnRotLPressed;
+            bool wasR   = g_viewState.editBtnRotRPressed;
+            bool wasFr  = g_viewState.editBtnRotFreePressed;
+            bool wasRz  = g_viewState.editBtnResizePressed;
+            g_viewState.editBtnRotLPressed    = false;
+            g_viewState.editBtnRotRPressed    = false;
+            g_viewState.editBtnRotFreePressed = false;
+            g_viewState.editBtnResizePressed  = false;
             g_clickInToolbar = false;
             float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
             if (delta < 5.0f)
             {
-                if (wasL)       DoRotateCCW(hwnd);
-                else if (wasR)  DoRotateCW(hwnd);
-                else if (wasRz) DoOpenResizeDialog(hwnd);
+                if (wasL)        DoRotateCCW(hwnd);
+                else if (wasR)   DoRotateCW(hwnd);
+                else if (wasFr)  DoOpenRotateFreeDialog(hwnd);
+                else if (wasRz)  DoOpenResizeDialog(hwnd);
             }
             else
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -2274,8 +2547,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float cx = static_cast<float>(GET_X_LPARAM(lParam));
         float cy = static_cast<float>(GET_Y_LPARAM(lParam));
 
-        // Yeniden boyutlandır dialogu açıkken çift tıklama ile zoom yapma
-        if (g_viewState.showResizeDialog) return 0;
+        // Yeniden boyutlandır / serbest döndürme dialogu açıkken çift tıklama ile zoom yapma
+        if (g_viewState.showResizeDialog || g_viewState.showRotateFreeDialog) return 0;
 
         // Edit toolbar butonlarında çift tıklamayı engelle — hızlı ardışık döndürme desteği
         if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
@@ -2381,6 +2654,34 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_KEYDOWN:
         ResetIndexIdleTimer(hwnd);
+
+        // Serbest döndürme dialogu açıksa — Escape=kapat, Enter=uygula, ←/→=ince ayar
+        if (g_viewState.showRotateFreeDialog)
+        {
+            auto clamp45 = [](float a) { return a < -45.0f ? -45.0f : (a > 45.0f ? 45.0f : a); };
+            if (wParam == VK_ESCAPE)
+            {
+                g_viewState.showRotateFreeDialog  = false;
+                g_viewState.rotateFreeDlgHoverBtn = 0;
+                g_viewState.rotateFreeDlgPressBtn = 0;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            else if (wParam == VK_RETURN)
+                DoApplyRotateFree(hwnd);
+            else if (wParam == VK_LEFT)
+            {
+                float step = (GetKeyState(VK_SHIFT) & 0x8000) ? 1.0f : 0.1f;
+                g_viewState.rotateFreeAngle = clamp45(g_viewState.rotateFreeAngle - step);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            else if (wParam == VK_RIGHT)
+            {
+                float step = (GetKeyState(VK_SHIFT) & 0x8000) ? 1.0f : 0.1f;
+                g_viewState.rotateFreeAngle = clamp45(g_viewState.rotateFreeAngle + step);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
 
         // Resize dialogu açıksa — Escape ile kapat, Enter ile uygula
         if (g_viewState.showResizeDialog)

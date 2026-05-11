@@ -858,10 +858,19 @@ void Renderer::Render(const ViewState& vs, const ImageInfo* info)
         float destX = (availW - destW) * 0.5f + vs.panX;
         float destY = (availH - destH) * 0.5f + vs.panY;
 
-        m_renderTarget->DrawBitmap(
-            activeBitmap,
-            D2D1::RectF(destX, destY, destX + destW, destY + destH)
-        );
+        if (vs.showRotateFreeDialog && fabsf(vs.rotateFreeAngle) > 0.01f)
+        {
+            float imgCX = destX + destW * 0.5f;
+            float imgCY = destY + destH * 0.5f;
+            auto rot = D2D1::Matrix3x2F::Rotation(vs.rotateFreeAngle, D2D1::Point2F(imgCX, imgCY));
+            m_renderTarget->SetTransform(rot);
+            m_renderTarget->DrawBitmap(activeBitmap, D2D1::RectF(destX, destY, destX + destW, destY + destH));
+            m_renderTarget->SetTransform(D2D1::Matrix3x2F::Identity());
+        }
+        else
+        {
+            m_renderTarget->DrawBitmap(activeBitmap, D2D1::RectF(destX, destY, destX + destW, destY + destH));
+        }
     }
 
     // Overlaylar (arka plandan öne doğru)
@@ -875,6 +884,7 @@ void Renderer::Render(const ViewState& vs, const ImageInfo* info)
     DrawSaveBar(vs);     // Alt orta — kaydedilmemiş değişiklik varsa görünür
     DrawDeleteConfirmDialog(vs, info); // Modal dialog — en üst katman
     DrawResizeDialog(vs);              // Resize modal — en üst katman
+    DrawRotateFreeDialog(vs);          // Serbest döndürme modal — en üst katman
 
     // Zoom indicator: sağ alt köşe (alpha fade)
     if (vs.zoomIndicatorAlpha > 0.01f && m_textFormat && m_whiteBrush && m_overlayBrush)
@@ -1004,6 +1014,39 @@ static void DrawRotateIcon(ID2D1HwndRenderTarget* rt, ID2D1Factory* factory,
     }
 }
 
+// Serbest döndürme ikonu — eğik ufuk çizgisi + yatay referans.
+// cx,cy: buton merkezi; strokeW: çizgi kalınlığı.
+static void DrawFreeRotateIcon(ID2D1HwndRenderTarget* rt, ID2D1SolidColorBrush* brush,
+                                float cx, float cy, float strokeW)
+{
+    // Eğik çizgi (~18°): cos(18°)=0.9511, sin(18°)=0.3090
+    constexpr float cosT = 0.9511f;
+    constexpr float sinT = 0.3090f;
+    constexpr float len  = 8.5f;
+
+    float lx1 = cx - len * cosT, ly1 = cy + len * sinT;  // sol uç
+    float lx2 = cx + len * cosT, ly2 = cy - len * sinT;  // sağ uç
+    rt->DrawLine(D2D1::Point2F(lx1, ly1), D2D1::Point2F(lx2, ly2), brush, strokeW);
+
+    // Sağ uçta ok başı — çizgi yönü geri (sol): (-cosT, sinT)
+    // Ok kanatları: geri yönün ±70° sapması
+    constexpr float arrowLen = 3.8f;
+    // Kanat 1: perpendicular - back mix
+    float w1x = lx2 + arrowLen * (-cosT * 0.5f - sinT * 0.87f);
+    float w1y = ly2 + arrowLen * ( sinT * 0.5f - cosT * 0.87f);
+    float w2x = lx2 + arrowLen * (-cosT * 0.5f + sinT * 0.87f);
+    float w2y = ly2 + arrowLen * ( sinT * 0.5f + cosT * 0.87f);
+    rt->DrawLine(D2D1::Point2F(lx2, ly2), D2D1::Point2F(w1x, w1y), brush, strokeW);
+    rt->DrawLine(D2D1::Point2F(lx2, ly2), D2D1::Point2F(w2x, w2y), brush, strokeW);
+
+    // Yatay referans çizgisi (doğru yatay = hedefteki ufuk)
+    constexpr float refY = 4.0f;
+    float op = brush->GetOpacity();
+    brush->SetOpacity(op * 0.55f);
+    rt->DrawLine(D2D1::Point2F(cx - len, cy + refY), D2D1::Point2F(cx + len, cy + refY), brush, strokeW * 0.7f);
+    brush->SetOpacity(op);
+}
+
 // Yeniden boyutlandır ikonu — 4 köşeye diyagonal oklar (köşegen ölçek sembolü).
 // cx,cy: buton merkezi; strokeW: çizgi kalınlığı.
 static void DrawResizeIcon(ID2D1HwndRenderTarget* rt, ID2D1SolidColorBrush* brush,
@@ -1056,8 +1099,8 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
     constexpr float kMarginTop = 16.0f;
     constexpr float kStrokeW   = 2.2f;
 
-    // 3 buton: ↺ CCW | ↻ CW | ⤢ Resize
-    const float totalW = kBtnSize * 3.0f + kGap * 2.0f;
+    // 4 buton: ↺ CCW | ↻ CW | ↗ Serbest | ⤢ Resize
+    const float totalW = kBtnSize * 4.0f + kGap * 3.0f;
     const float startX = (availW - totalW) * 0.5f;
     const float btnY   = kMarginTop;
 
@@ -1092,14 +1135,26 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
         DrawRotateIcon(m_renderTarget, m_factory, m_whiteBrush, cx, cy, true, kStrokeW);
     }
 
-    // ⤢ Yeniden Boyutlandır — sağ buton
+    // ↗ Serbest döndür — üçüncü buton
     const float btn3X = btn2X + kBtnSize + kGap;
-    m_editBtnResizeRect = D2D1::RectF(btn3X, btnY, btn3X + kBtnSize, btnY + kBtnSize);
+    m_editBtnRotFreeRect = D2D1::RectF(btn3X, btnY, btn3X + kBtnSize, btnY + kBtnSize);
+    {
+        D2D1_ROUNDED_RECT rr = { m_editBtnRotFreeRect, kBtnRadius, kBtnRadius };
+        m_renderTarget->FillRoundedRectangle(rr,
+            vs.editBtnRotFreePressed ? m_activeBrush : m_panelBgBrush);
+        float cx = btn3X + kBtnSize * 0.5f;
+        float cy = btnY  + kBtnSize * 0.5f;
+        DrawFreeRotateIcon(m_renderTarget, m_whiteBrush, cx, cy, kStrokeW);
+    }
+
+    // ⤢ Yeniden Boyutlandır — dördüncü buton
+    const float btn4X = btn3X + kBtnSize + kGap;
+    m_editBtnResizeRect = D2D1::RectF(btn4X, btnY, btn4X + kBtnSize, btnY + kBtnSize);
     {
         D2D1_ROUNDED_RECT rr = { m_editBtnResizeRect, kBtnRadius, kBtnRadius };
         m_renderTarget->FillRoundedRectangle(rr,
             vs.editBtnResizePressed ? m_activeBrush : m_panelBgBrush);
-        float cx = btn3X + kBtnSize * 0.5f;
+        float cx = btn4X + kBtnSize * 0.5f;
         float cy = btnY  + kBtnSize * 0.5f;
         DrawResizeIcon(m_renderTarget, m_whiteBrush, cx, cy, kStrokeW);
     }
@@ -1530,6 +1585,185 @@ void Renderer::DrawResizeDialog(const ViewState& vs)
 
     DrawMainBtn(m_resizeDlgCancelRect, btn1L, btn1R, m_separatorBrush, L"İptal",  1);
     DrawMainBtn(m_resizeDlgApplyRect,  btn2L, btn2R, m_saveBtnBrush,   L"Uygula", 2);
+}
+
+// ─── Serbest Döndürme Dialogu ────────────────────────────────────────────────
+// Açı aralığı: -45°..+45°. Canlı D2D önizlemesi (piksel değişmez, Uygula'da kalıcı olur).
+// Buton ID'leri: 1=−1°, 2=−0.1°, 3=+0.1°, 4=+1°, 5=Sıfırla, 6=İptal, 7=Uygula
+
+void Renderer::DrawRotateFreeDialog(const ViewState& vs)
+{
+    m_rotFreeDlgVisible = false;
+    if (!vs.showRotateFreeDialog) return;
+    if (!m_panelBgBrush || !m_separatorBrush || !m_whiteBrush || !m_grayBrush
+     || !m_overlayBrush  || !m_btnFormat     || !m_labelFormat || !m_valueFormat
+     || !m_activeBrush   || !m_saveBtnBrush) return;
+
+    m_rotFreeDlgVisible = true;
+
+    D2D1_SIZE_F sz = m_renderTarget->GetSize();
+
+    // Yarı saydam backdrop
+    {
+        float op = m_overlayBrush->GetOpacity();
+        m_overlayBrush->SetOpacity(0.72f);
+        m_renderTarget->FillRectangle(D2D1::RectF(0, 0, sz.width, sz.height), m_overlayBrush);
+        m_overlayBrush->SetOpacity(op);
+    }
+
+    constexpr float kDlgW  = 340.0f;
+    constexpr float kDlgH  = 200.0f;
+    constexpr float kRadii = 12.0f;
+    constexpr float kPadX  = 20.0f;
+
+    const float dlgLeft   = (sz.width  - kDlgW) * 0.5f;
+    const float dlgTop    = (sz.height - kDlgH) * 0.5f;
+    const float dlgRight  = dlgLeft + kDlgW;
+    const float dlgBottom = dlgTop  + kDlgH;
+
+    D2D1_ROUNDED_RECT dlgRR = { D2D1::RectF(dlgLeft, dlgTop, dlgRight, dlgBottom), kRadii, kRadii };
+    m_renderTarget->FillRoundedRectangle(dlgRR, m_panelBgBrush);
+    m_renderTarget->DrawRoundedRectangle(dlgRR, m_separatorBrush, 1.0f);
+
+    // Başlık
+    {
+        const wchar_t* title = L"Serbest Döndürme";
+        D2D1_RECT_F r = D2D1::RectF(dlgLeft + kPadX, dlgTop + 16.0f,
+                                      dlgRight - kPadX, dlgTop + 38.0f);
+        m_renderTarget->DrawText(title, static_cast<UINT32>(wcslen(title)),
+                                  m_valueFormat, r, m_whiteBrush);
+    }
+
+    // ── Slider ──────────────────────────────────────────────────────────────
+    constexpr float kSliderPadX  = 30.0f;
+    constexpr float kSliderY     = 62.0f;   // rail merkez y (dialog'a göre)
+    constexpr float kSliderH     = 6.0f;
+    constexpr float kKnobR       = 9.0f;
+    constexpr float kRange       = 90.0f;   // -45..+45 = 90°
+
+    const float railLeft  = dlgLeft + kSliderPadX;
+    const float railRight = dlgRight - kSliderPadX;
+    const float railW     = railRight - railLeft;
+    const float railTop   = dlgTop + kSliderY - kSliderH * 0.5f;
+    const float railBot   = dlgTop + kSliderY + kSliderH * 0.5f;
+    const float knobCX    = railLeft + (vs.rotateFreeAngle + 45.0f) / kRange * railW;
+    const float knobCY    = dlgTop + kSliderY;
+
+    // Slider hit testi alanı (knob dahil)
+    m_rotFreeDlgSliderRect = D2D1::RectF(railLeft - kKnobR, dlgTop + kSliderY - kKnobR,
+                                          railRight + kKnobR, dlgTop + kSliderY + kKnobR);
+
+    // Rail arka plan
+    {
+        D2D1_ROUNDED_RECT rrRail = { D2D1::RectF(railLeft, railTop, railRight, railBot), 3.0f, 3.0f };
+        m_renderTarget->FillRoundedRectangle(rrRail, m_separatorBrush);
+    }
+    // Rail sol taraf (dolu kısım)
+    {
+        float fillRight = min(knobCX, railRight);
+        if (fillRight > railLeft)
+        {
+            D2D1_ROUNDED_RECT rrFill = { D2D1::RectF(railLeft, railTop, fillRight, railBot), 3.0f, 3.0f };
+            m_renderTarget->FillRoundedRectangle(rrFill, m_activeBrush);
+        }
+    }
+    // Knob (beyaz daire)
+    m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(knobCX, knobCY), kKnobR, kKnobR), m_whiteBrush);
+    m_renderTarget->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(knobCX, knobCY), kKnobR, kKnobR),
+                                 m_separatorBrush, 1.0f);
+
+    // Slider uç etiketleri
+    {
+        D2D1_RECT_F rL = D2D1::RectF(railLeft - 18.0f, dlgTop + kSliderY + 14.0f,
+                                       railLeft + 18.0f, dlgTop + kSliderY + 30.0f);
+        D2D1_RECT_F rR = D2D1::RectF(railRight - 18.0f, dlgTop + kSliderY + 14.0f,
+                                       railRight + 18.0f, dlgTop + kSliderY + 30.0f);
+        m_renderTarget->DrawText(L"-45°", 5, m_toggleFormat, rL, m_grayBrush);
+        m_renderTarget->DrawText(L"+45°", 5, m_toggleFormat, rR, m_grayBrush);
+    }
+
+    // ── Açı göstergesi ───────────────────────────────────────────────────────
+    {
+        wchar_t angleTxt[16];
+        swprintf_s(angleTxt, L"%.1f°", vs.rotateFreeAngle);
+        D2D1_RECT_F r = D2D1::RectF(dlgLeft, dlgTop + 86.0f, dlgRight, dlgTop + 108.0f);
+        m_renderTarget->DrawText(angleTxt, static_cast<UINT32>(wcslen(angleTxt)),
+                                  m_btnFormat, r, m_whiteBrush);
+    }
+
+    // ── Ayar butonları: −1° | −0.1° | +0.1° | +1° ──────────────────────────
+    constexpr float kAdjBtnW  = 58.0f;
+    constexpr float kAdjBtnH  = 28.0f;
+    constexpr float kAdjBtnGap = 8.0f;
+    constexpr float kAdjTotalW = kAdjBtnW * 4.0f + kAdjBtnGap * 3.0f;
+    const float adjLeft = dlgLeft + (kDlgW - kAdjTotalW) * 0.5f;
+    const float adjTop  = dlgTop + 112.0f;
+
+    auto DrawAdjBtn = [&](D2D1_RECT_F& out, float x, const wchar_t* lbl, int id)
+    {
+        out = D2D1::RectF(x, adjTop, x + kAdjBtnW, adjTop + kAdjBtnH);
+        D2D1_ROUNDED_RECT rr = { out, 6.0f, 6.0f };
+        bool pressed = vs.rotateFreeDlgPressBtn == id;
+        bool hover   = vs.rotateFreeDlgHoverBtn == id;
+        m_renderTarget->FillRoundedRectangle(rr, m_separatorBrush);
+        if (pressed)
+        {
+            float op = m_activeBrush->GetOpacity();
+            m_activeBrush->SetOpacity(0.6f);
+            m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+            m_activeBrush->SetOpacity(op);
+        }
+        else if (hover)
+        {
+            float op = m_activeBrush->GetOpacity();
+            m_activeBrush->SetOpacity(0.28f);
+            m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+            m_activeBrush->SetOpacity(op);
+        }
+        m_renderTarget->DrawText(lbl, static_cast<UINT32>(wcslen(lbl)), m_btnFormat, out, m_whiteBrush);
+    };
+
+    float ax = adjLeft;
+    DrawAdjBtn(m_rotFreeDlgCoarseDecRect, ax,                          L"-1°",   1); ax += kAdjBtnW + kAdjBtnGap;
+    DrawAdjBtn(m_rotFreeDlgFineDecRect,   ax,                          L"-0.1°", 2); ax += kAdjBtnW + kAdjBtnGap;
+    DrawAdjBtn(m_rotFreeDlgFineIncRect,   ax,                          L"+0.1°", 3); ax += kAdjBtnW + kAdjBtnGap;
+    DrawAdjBtn(m_rotFreeDlgCoarseIncRect, ax,                          L"+1°",   4);
+
+    // ── Alt butonlar: Sıfırla | İptal | Uygula ───────────────────────────────
+    constexpr float kBtnH   = 34.0f;
+    constexpr float kBtnGap =  8.0f;
+    const float btnW   = (kDlgW - 2.0f * kPadX - 2.0f * kBtnGap) / 3.0f;
+    const float btnTop = dlgTop + 152.0f;
+
+    auto DrawMainBtn = [&](D2D1_RECT_F& out, float left, ID2D1SolidColorBrush* bg,
+                            const wchar_t* lbl, int id)
+    {
+        out = D2D1::RectF(left, btnTop, left + btnW, btnTop + kBtnH);
+        D2D1_ROUNDED_RECT rr = { out, 7.0f, 7.0f };
+        m_renderTarget->FillRoundedRectangle(rr, bg);
+        if (vs.rotateFreeDlgPressBtn == id)
+        {
+            float op = m_overlayBrush->GetOpacity();
+            m_overlayBrush->SetOpacity(0.20f);
+            m_renderTarget->FillRoundedRectangle(rr, m_overlayBrush);
+            m_overlayBrush->SetOpacity(op);
+        }
+        else if (vs.rotateFreeDlgHoverBtn == id)
+        {
+            float op = m_activeBrush->GetOpacity();
+            m_activeBrush->SetOpacity(0.25f);
+            m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+            m_activeBrush->SetOpacity(op);
+        }
+        m_renderTarget->DrawText(lbl, static_cast<UINT32>(wcslen(lbl)), m_btnFormat, out, m_whiteBrush);
+    };
+
+    const float btn1L = dlgLeft + kPadX;
+    const float btn2L = btn1L + btnW + kBtnGap;
+    const float btn3L = btn2L + btnW + kBtnGap;
+    DrawMainBtn(m_rotFreeDlgResetRect,  btn1L, m_separatorBrush, L"Sıfırla", 5);
+    DrawMainBtn(m_rotFreeDlgCancelRect, btn2L, m_separatorBrush, L"İptal",   6);
+    DrawMainBtn(m_rotFreeDlgApplyRect,  btn3L, m_saveBtnBrush,   L"Uygula",  7);
 }
 
 void Renderer::Resize(UINT width, UINT height)
