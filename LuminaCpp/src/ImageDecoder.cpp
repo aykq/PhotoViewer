@@ -1619,15 +1619,14 @@ bool ExtractImageMeta(const std::wstring& path, DecodeOutput& out)
     return ExtractMetaWIC(path, out);  // JPEG, PNG, BMP, GIF, TIFF, ICO
 }
 
-// ─── Nominatim reverse geocoding ─────────────────────────────────────────────
+// ─── Photon (Komoot) reverse geocoding ───────────────────────────────────────
 // GPS koordinatlarından konum adını döndürür: "Şehir, İl, Ülke"
-// WinHTTP ile nominatim.openstreetmap.org/reverse API'sine istek atar.
+// WinHTTP ile photon.komoot.io/reverse API'sine istek atar (GeoJSON, rate limit yok).
 
 std::wstring FetchLocationName(double lat, double lon)
 {
-    // /reverse?lat=X&lon=Y&format=json  →  JSON cevabından adres bilgisi çıkar
     wchar_t reqPath[128];
-    swprintf_s(reqPath, L"/reverse?lat=%.6f&lon=%.6f&format=json", lat, lon);
+    swprintf_s(reqPath, L"/reverse?lat=%.6f&lon=%.6f", lat, lon);
 
     HINTERNET hSession = WinHttpOpen(L"Lumina/1.0",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
@@ -1636,7 +1635,7 @@ std::wstring FetchLocationName(double lat, double lon)
     WinHttpSetTimeouts(hSession, 5000, 5000, 10000, 10000);
 
     HINTERNET hConn = WinHttpConnect(hSession,
-        L"nominatim.openstreetmap.org", INTERNET_DEFAULT_HTTPS_PORT, 0);
+        L"photon.komoot.io", INTERNET_DEFAULT_HTTPS_PORT, 0);
     if (!hConn) { WinHttpCloseHandle(hSession); return {}; }
 
     HINTERNET hReq = WinHttpOpenRequest(hConn, L"GET", reqPath,
@@ -1649,7 +1648,7 @@ std::wstring FetchLocationName(double lat, double lon)
     }
 
     WinHttpAddRequestHeaders(hReq,
-        L"Accept: application/json\r\nAccept-Language: tr,en",
+        L"Accept: application/json",
         static_cast<DWORD>(-1L), WINHTTP_ADDREQ_FLAG_ADD);
 
     bool ok = WinHttpSendRequest(hReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
@@ -1688,21 +1687,20 @@ std::wstring FetchLocationName(double lat, double lon)
         return e != std::string::npos ? src.substr(p, e - p) : std::string{};
     };
 
-    // "address":{...} bloğunu bul; yoksa tüm body'de ara
-    auto addrPos = body.find("\"address\":");
-    auto addrEnd = addrPos != std::string::npos ? body.find('}', addrPos) : std::string::npos;
-    std::string addr = (addrPos != std::string::npos && addrEnd != std::string::npos)
-                       ? body.substr(addrPos, addrEnd - addrPos + 1)
-                       : body;
+    // Photon GeoJSON: features[0].properties.{city,locality,county,state,country}
+    auto propsPos = body.find("\"properties\":");
+    auto propsEnd = propsPos != std::string::npos ? body.find('}', propsPos) : std::string::npos;
+    std::string props = (propsPos != std::string::npos && propsEnd != std::string::npos)
+                        ? body.substr(propsPos, propsEnd - propsPos + 1)
+                        : body;
 
     // Şehir/kasaba/köy → il → ülke
-    std::string city = extract(addr, "city");
-    if (city.empty()) city = extract(addr, "town");
-    if (city.empty()) city = extract(addr, "village");
-    if (city.empty()) city = extract(addr, "municipality");
-    if (city.empty()) city = extract(addr, "county");
-    std::string state   = extract(addr, "state");
-    std::string country = extract(addr, "country");
+    std::string city = extract(props, "city");
+    if (city.empty()) city = extract(props, "locality");
+    if (city.empty()) city = extract(props, "county");
+    if (city.empty()) city = extract(props, "name");
+    std::string state   = extract(props, "state");
+    std::string country = extract(props, "country");
 
     std::string result;
     auto append = [&](const std::string& s)

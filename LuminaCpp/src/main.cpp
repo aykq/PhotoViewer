@@ -12,15 +12,18 @@
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
 #include <string>
-#include <cmath>           // fabsf, expf
-#include <thread>          // std::thread
-#include <atomic>          // std::atomic
-#include <vector>          // std::vector (DecodeResult piksel buffer'ı)
-#include <unordered_map>   // Prefetch cache
-#include <unordered_set>   // Prefetch desired set
-#include <mutex>           // std::mutex
-#include <semaphore>       // std::counting_semaphore
+#include <cmath>               // fabsf, expf, round
+#include <thread>              // std::thread
+#include <atomic>              // std::atomic
+#include <vector>              // std::vector (DecodeResult piksel buffer'ı)
+#include <deque>               // location prefetch queue
+#include <unordered_map>       // Prefetch cache
+#include <unordered_set>       // Prefetch desired set
+#include <mutex>               // std::mutex
+#include <condition_variable>  // location prefetch worker
+#include <semaphore>           // std::counting_semaphore
 #include <cstdint>
+#include <cstdio>              // fopen, fwprintf (disk cache I/O)
 #include "Renderer.h"
 #include "FolderNavigator.h"
 #include "ImageDecoder.h"
@@ -135,11 +138,27 @@ static std::unordered_map<std::wstring, DecodeResult*> g_decodeCache;
 static constexpr size_t                                kCacheMaxSize   = 24;  // ~1.15GB (12MP HEIC × 24)
 static constexpr int                                   kPrefetchRange  = 8;   // ±8 = 16 komşu
 
-// --- GPS adres (Nominatim) in-process cache ---
-// Key: L"lat,lon" (6 ondalık, virgülle ayrılmış), Value: konum adı
-// Uygulama yaşam süresi boyunca tutulur; aynı koordinat için tek HTTP isteği yapılır.
+// --- GPS adres (Photon reverse geocoding) in-process + disk cache ---
+// Key: ~50m hassasiyetle yuvarlanmış "%.4f,%.4f", Value: konum adı
+// Disk cache: %APPDATA%\Lumina\location_cache.txt — uygulama başlangıcında yüklenir.
 static std::mutex                                       g_locationCacheMutex;
 static std::unordered_map<std::wstring, std::wstring>  g_locationCache;
+
+// --- GPS location prefetch queue ---
+// Tek worker thread sıralı HTTP istekleri atar; Photon rate limit gerektirmez.
+static std::deque<std::pair<double,double>>  g_locationPrefetchQueue;
+static std::mutex                            g_locationPrefetchMutex;
+static std::condition_variable               g_locationPrefetchCV;
+static std::atomic<bool>                     g_locationPrefetchStop{false};
+static std::thread                           g_locationPrefetchThread;
+static constexpr size_t                      kLocationQueueMaxSize = 24;
+
+// --- Metadata in-process cache ---
+// Key: dosya yolu, Value: ImageInfo (EXIF + boyut alanları, piksel yok)
+// EXIF parse tekrarını önler; g_locationCache ile aynı yaşam süresi.
+static std::mutex                                       g_metaCacheMutex;
+static std::unordered_map<std::wstring, ImageInfo>      g_metaCache;
+static constexpr size_t                                 kMetaCacheMaxSize = 256;
 
 // Path-based prefetch iptal seti: decode tamamlandığında path hâlâ
 // isteniyorsa cache'e eklenir, yoksa sonuç atılır.
@@ -160,15 +179,26 @@ static std::atomic<uint64_t>                           g_thumbCancel{0};
 // --- Tile fetch cancel ---
 static std::atomic<uint64_t>                           g_tileCancel{0};
 
+// --- İleriye bildirimler ---
+static void EnqueueLocationPrefetch(double lat, double lon);
+
 // --- Decode yardımcıları ---
 
 // Ortak decode mantığı — hem ana decode hem prefetch tarafından kullanılır.
 // Cache'li FetchLocationName: aynı koordinat için tek HTTP isteği yapılır.
 // Thread-safe: birden fazla thread aynı anda çağırabilir.
+// ~50m hassasiyet: en yakın 0.0005 dereceye yuvarla, "%.4f,%.4f" formatında key üret.
+static void MakeLocationKey(double lat, double lon, wchar_t* key, int keySize)
+{
+    double rLat = round(lat * 2000.0) / 2000.0;
+    double rLon = round(lon * 2000.0) / 2000.0;
+    swprintf_s(key, keySize, L"%.4f,%.4f", rLat, rLon);
+}
+
 static std::wstring FetchLocationCached(double lat, double lon)
 {
-    wchar_t key[64];
-    swprintf_s(key, L"%.6f,%.6f", lat, lon);
+    wchar_t key[32];
+    MakeLocationKey(lat, lon, key, 32);
 
     {
         std::lock_guard<std::mutex> lk(g_locationCacheMutex);
@@ -184,6 +214,24 @@ static std::wstring FetchLocationCached(double lat, double lon)
         g_locationCache[key] = name;  // boş string de cache'lenir (başarısız istek tekrar atılmaz)
     }
     return name;
+}
+
+static void CacheMetaInfo(const std::wstring& path, const ImageInfo& info)
+{
+    std::lock_guard<std::mutex> lk(g_metaCacheMutex);
+    if (g_metaCache.size() >= kMetaCacheMaxSize)
+        g_metaCache.erase(g_metaCache.begin());
+    g_metaCache[path] = info;
+}
+
+// g_locationCache'den anlık lookup — HTTP isteği yapmaz, sadece bellekten okur.
+static std::wstring LookupLocationFromCache(double lat, double lon)
+{
+    wchar_t key[32];
+    MakeLocationKey(lat, lon, key, 32);
+    std::lock_guard<std::mutex> lk(g_locationCacheMutex);
+    auto it = g_locationCache.find(key);
+    return (it != g_locationCache.end()) ? it->second : std::wstring{};
 }
 
 // COM zaten başlatılmış olmalı. result->path önceden doldurulmuş olmalı.
@@ -254,33 +302,71 @@ static void StartDecode(HWND hwnd, const std::wstring& path)
         CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
         // ── Aşama 1: Hızlı metadata (piksel decode YOK) ──────────────────────
-        // HEIC/AVIF gibi yavaş formatlarda ~50-100ms; info paneli hemen dolar.
+        // Önce meta cache'e bak; miss ise diskten oku ve cache'e yaz.
         {
-            DecodeOutput metaOut;
-            if (ExtractImageMeta(path, metaOut))
+            ImageInfo cachedMeta;
+            bool metaHit = false;
             {
-                // Jenerasyon hâlâ geçerliyse gönder (kullanıcı navigasyon yapmadıysa)
+                std::lock_guard<std::mutex> lk(g_metaCacheMutex);
+                auto it = g_metaCache.find(path);
+                if (it != g_metaCache.end())
+                {
+                    cachedMeta = it->second;
+                    metaHit    = true;
+                }
+            }
+
+            if (metaHit)
+            {
+                // g_locationCache'de konum adı varsa hemen ekle (HTTP yapmaz)
+                if (cachedMeta.hasGpsDecimal && cachedMeta.gpsLocationName.empty())
+                    cachedMeta.gpsLocationName =
+                        LookupLocationFromCache(cachedMeta.gpsLatDecimal, cachedMeta.gpsLonDecimal);
+
                 if (g_decodeGeneration.load() == gen)
                 {
-                    auto* meta          = new MetaResult();
-                    meta->generation    = gen;
-                    meta->info.width    = static_cast<int>(metaOut.width);
-                    meta->info.height   = static_cast<int>(metaOut.height);
-                    meta->info.format        = metaOut.format;
-                    meta->info.dateTaken     = metaOut.dateTaken;
-                    meta->info.cameraMake    = metaOut.cameraMake;
-                    meta->info.cameraModel   = metaOut.cameraModel;
-                    meta->info.aperture      = metaOut.aperture;
-                    meta->info.shutterSpeed  = metaOut.shutterSpeed;
-                    meta->info.iso           = metaOut.iso;
-                    meta->info.gpsLatitude   = metaOut.gpsLatitude;
-                    meta->info.gpsLongitude  = metaOut.gpsLongitude;
-                    meta->info.gpsAltitude   = metaOut.gpsAltitude;
-                    meta->info.hasGpsDecimal = metaOut.hasGpsDecimal;
-                    meta->info.gpsLatDecimal = metaOut.gpsLatDecimal;
-                    meta->info.gpsLonDecimal = metaOut.gpsLonDecimal;
-                    meta->info.iccProfileName = metaOut.iccProfileName;
+                    auto* meta       = new MetaResult();
+                    meta->generation = gen;
+                    meta->info       = cachedMeta;
                     PostMessage(hwnd, WM_META_DONE, 0, reinterpret_cast<LPARAM>(meta));
+                }
+            }
+            else
+            {
+                DecodeOutput metaOut;
+                if (ExtractImageMeta(path, metaOut))
+                {
+                    ImageInfo mi;
+                    mi.width          = static_cast<int>(metaOut.width);
+                    mi.height         = static_cast<int>(metaOut.height);
+                    mi.format         = metaOut.format;
+                    mi.dateTaken      = metaOut.dateTaken;
+                    mi.cameraMake     = metaOut.cameraMake;
+                    mi.cameraModel    = metaOut.cameraModel;
+                    mi.aperture       = metaOut.aperture;
+                    mi.shutterSpeed   = metaOut.shutterSpeed;
+                    mi.iso            = metaOut.iso;
+                    mi.gpsLatitude    = metaOut.gpsLatitude;
+                    mi.gpsLongitude   = metaOut.gpsLongitude;
+                    mi.gpsAltitude    = metaOut.gpsAltitude;
+                    mi.hasGpsDecimal  = metaOut.hasGpsDecimal;
+                    mi.gpsLatDecimal  = metaOut.gpsLatDecimal;
+                    mi.gpsLonDecimal  = metaOut.gpsLonDecimal;
+                    mi.iccProfileName = metaOut.iccProfileName;
+                    CacheMetaInfo(path, mi);
+
+                    // g_locationCache'de konum adı varsa hemen ekle (HTTP yapmaz)
+                    if (mi.hasGpsDecimal)
+                        mi.gpsLocationName =
+                            LookupLocationFromCache(mi.gpsLatDecimal, mi.gpsLonDecimal);
+
+                    if (g_decodeGeneration.load() == gen)
+                    {
+                        auto* meta       = new MetaResult();
+                        meta->generation = gen;
+                        meta->info       = std::move(mi);
+                        PostMessage(hwnd, WM_META_DONE, 0, reinterpret_cast<LPARAM>(meta));
+                    }
                 }
             }
         }
@@ -381,6 +467,9 @@ static void StartPrefetch(const std::wstring& path)
         }
 
         // Cache'e ekle
+        const bool   hasGps = result->info.hasGpsDecimal;
+        const double gpsLat = result->info.gpsLatDecimal;
+        const double gpsLon = result->info.gpsLonDecimal;
         {
             std::lock_guard<std::mutex> lock(g_cacheMutex);
             // Cache doluysa en eski girdiyi at
@@ -396,6 +485,8 @@ static void StartPrefetch(const std::wstring& path)
             else
                 delete result;
         }
+        // GPS varsa location prefetch queue'ya ekle
+        if (hasGps) EnqueueLocationPrefetch(gpsLat, gpsLon);
     }).detach();
 }
 
@@ -641,6 +732,8 @@ static void ApplyDecodeResult(HWND hwnd, DecodeResult* result)
         }
     }
     g_imageInfo = result->info;
+    if (!result->path.empty())
+        CacheMetaInfo(result->path, result->info);
 
     // Edit state güncelle — animasyonlu görüntüler düzenlenemez
     if (!result->frames.empty())
@@ -810,6 +903,142 @@ static void StartTileFetches(HWND hwnd, double lat, double lon)
 
                 PostMessage(hwnd, WM_TILE_DONE, 0, reinterpret_cast<LPARAM>(result));
             }).detach();
+        }
+    }
+}
+
+// --- GPS location disk cache ---
+
+static std::wstring GetLocationCachePath()
+{
+    wchar_t appdata[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH)) return {};
+    return std::wstring(appdata) + L"\\Lumina\\location_cache.txt";
+}
+
+static void LoadLocationCache()
+{
+    auto path = GetLocationCachePath();
+    if (path.empty()) return;
+    FILE* f = nullptr;
+    _wfopen_s(&f, path.c_str(), L"r,ccs=UTF-8");
+    if (!f) return;
+    wchar_t line[512];
+    while (fgetws(line, 512, f))
+    {
+        std::wstring l(line);
+        while (!l.empty() && (l.back() == L'\n' || l.back() == L'\r')) l.pop_back();
+        auto tab = l.find(L'\t');
+        if (tab == std::wstring::npos || tab == 0) continue;
+        std::wstring key = l.substr(0, tab);
+        std::wstring val = l.substr(tab + 1);
+        std::lock_guard<std::mutex> lk(g_locationCacheMutex);
+        g_locationCache[key] = val;
+    }
+    fclose(f);
+}
+
+static void SaveLocationCache()
+{
+    auto path = GetLocationCachePath();
+    if (path.empty()) return;
+    auto dir = path.substr(0, path.rfind(L'\\'));
+    CreateDirectoryW(dir.c_str(), nullptr);
+    FILE* f = nullptr;
+    _wfopen_s(&f, path.c_str(), L"w,ccs=UTF-8");
+    if (!f) return;
+    std::lock_guard<std::mutex> lk(g_locationCacheMutex);
+    for (const auto& [key, val] : g_locationCache)
+        if (!key.empty() && !val.empty())
+            fwprintf(f, L"%ls\t%ls\n", key.c_str(), val.c_str());
+    fclose(f);
+}
+
+// --- GPS location prefetch worker ---
+
+static void EnqueueLocationPrefetch(double lat, double lon)
+{
+    wchar_t key[32];
+    MakeLocationKey(lat, lon, key, 32);
+    {
+        std::lock_guard<std::mutex> lk(g_locationCacheMutex);
+        if (g_locationCache.count(key)) return;
+    }
+    double rLat = round(lat * 2000.0) / 2000.0;
+    double rLon = round(lon * 2000.0) / 2000.0;
+    {
+        std::lock_guard<std::mutex> lk(g_locationPrefetchMutex);
+        for (const auto& c : g_locationPrefetchQueue)
+            if (c.first == rLat && c.second == rLon) return;
+        if (g_locationPrefetchQueue.size() >= kLocationQueueMaxSize)
+            g_locationPrefetchQueue.pop_front();
+        g_locationPrefetchQueue.emplace_back(rLat, rLon);
+    }
+    g_locationPrefetchCV.notify_one();
+}
+
+static void StartLocationPrefetchThread()
+{
+    g_locationPrefetchStop = false;
+    g_locationPrefetchThread = std::thread([]()
+    {
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        while (true)
+        {
+            std::pair<double,double> coord;
+            {
+                std::unique_lock<std::mutex> lk(g_locationPrefetchMutex);
+                g_locationPrefetchCV.wait(lk, []
+                {
+                    return g_locationPrefetchStop.load() || !g_locationPrefetchQueue.empty();
+                });
+                if (g_locationPrefetchStop && g_locationPrefetchQueue.empty()) break;
+                coord = g_locationPrefetchQueue.front();
+                g_locationPrefetchQueue.pop_front();
+            }
+            FetchLocationCached(coord.first, coord.second);
+        }
+        CoUninitialize();
+    });
+}
+
+static void StopLocationPrefetchThread()
+{
+    {
+        std::lock_guard<std::mutex> lk(g_locationPrefetchMutex);
+        g_locationPrefetchStop = true;
+        g_locationPrefetchQueue.clear();
+    }
+    g_locationPrefetchCV.notify_all();
+    if (g_locationPrefetchThread.joinable())
+        g_locationPrefetchThread.join();
+}
+
+static void TriggerLocationPrefetch()
+{
+    if (!g_navigator || g_navigator->empty()) return;
+    for (int d = 1; d <= kPrefetchRange; ++d)
+    {
+        for (int sign : {+1, -1})
+        {
+            const std::wstring p = g_navigator->peek_at_linear(d * sign);
+            if (p.empty()) continue;
+            double lat = 0.0, lon = 0.0;
+            bool found = false;
+            {
+                std::lock_guard<std::mutex> lk(g_metaCacheMutex);
+                auto it = g_metaCache.find(p);
+                if (it != g_metaCache.end() && it->second.hasGpsDecimal)
+                    { lat = it->second.gpsLatDecimal; lon = it->second.gpsLonDecimal; found = true; }
+            }
+            if (!found)
+            {
+                std::lock_guard<std::mutex> lk(g_cacheMutex);
+                auto it = g_decodeCache.find(p);
+                if (it != g_decodeCache.end() && it->second->info.hasGpsDecimal)
+                    { lat = it->second->info.gpsLatDecimal; lon = it->second->info.gpsLonDecimal; found = true; }
+            }
+            if (found) EnqueueLocationPrefetch(lat, lon);
         }
     }
 }
@@ -1002,12 +1231,18 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
         g_viewState.imageTotal = g_navigator->total();
     }
 
-    // Info panelini hemen güncelle: dosya adını göster, EXIF temizle
+    // Info panelini hemen güncelle: dosya adı + boyutu anında göster, EXIF temizle
     g_imageInfo = ImageInfo{};
     {
         auto sep = path.rfind(L'\\');
         if (sep == std::wstring::npos) sep = path.rfind(L'/');
         g_imageInfo.filename = (sep != std::wstring::npos) ? path.substr(sep + 1) : path;
+    }
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fad{};
+        if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad))
+            g_imageInfo.fileSizeBytes =
+                (static_cast<int64_t>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
     }
 
     // Prefetch cache kontrolü — hit ise anında uygula
@@ -1031,13 +1266,18 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
             delete cached;
             // Lock serbest bırakıldıktan sonra prefetch tetikle (deadlock önlemi)
             TriggerPrefetch();
+            TriggerLocationPrefetch();
             UpdateStripSlots(hwnd);
             TriggerThumbFetches(hwnd);
             // GPS varsa OSM tile'larını arka planda çek (cache hit yolunda da gerekli)
             if (g_imageInfo.hasGpsDecimal)
             {
                 StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
-                // Prefetch Nominatim yapmadı — cache hit'te arka planda çek
+                // Önce g_locationCache'den anlık lookup — HTTP gerektirmez
+                if (g_imageInfo.gpsLocationName.empty())
+                    g_imageInfo.gpsLocationName =
+                        LookupLocationFromCache(g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                // Hâlâ boşsa (cache miss) arka planda Nominatim çek
                 if (g_imageInfo.gpsLocationName.empty())
                 {
                     const uint64_t gen = g_decodeGeneration.load();
@@ -3024,6 +3264,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             KillTimer(hwnd, kEditToolbarIdleTimerID);
             SetTimer(hwnd, kEditToolbarIdleTimerID, 2000, nullptr);
 
+            // Meta cache: eski girdi temizle, güncel bilgiyi yaz
+            {
+                std::lock_guard<std::mutex> lk(g_metaCacheMutex);
+                g_metaCache.erase(r->savedPath);
+                if (r->isSaveAs && r->origPath != r->savedPath)
+                    g_metaCache.erase(r->origPath);
+                ImageInfo updatedMeta = g_imageInfo;
+                updatedMeta.format    = r->format;
+                g_metaCache[r->savedPath] = std::move(updatedMeta);
+            }
+
             // Prefetch cache'i güncelle: eski girdi temizle, düzenlenmiş pikselleri ekle
             {
                 std::lock_guard<std::mutex> lk(g_cacheMutex);
@@ -3088,6 +3339,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             ApplyDecodeResult(hwnd, result);
             // Decode tamamlandı — komşuları arka planda yükle
             TriggerPrefetch();
+            TriggerLocationPrefetch();
             // Strip slot'larını güncelle (ilk açılışta NavigateTo çağrılmaz, burada yapılır)
             UpdateStripSlots(hwnd);
             TriggerThumbFetches(hwnd);
@@ -3201,6 +3453,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         KillTimer(hwnd, kEditToolbarIdleTimerID);
         KillTimer(hwnd, kEditToolbarFadeTimerID);
         KillTimer(hwnd, kDirChangeTimerID);
+        StopLocationPrefetchThread();
+        SaveLocationCache();
         StopDirectoryWatcher();
         timeEndPeriod(1);
         // Prefetch cache'ini temizle
@@ -3234,6 +3488,8 @@ int WINAPI WinMain(
     QueryPerformanceFrequency(&g_qpcFreq);
 
     LoadSettings();
+    LoadLocationCache();
+    StartLocationPrefetchThread();
 
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
