@@ -906,10 +906,90 @@ static bool DecodeWebP(const std::wstring& path, DecodeOutput& out)
     return !out.frames.empty();
 }
 
-// ─── HEIF/HEIC decoder (libheif) ─────────────────────────────────────────────
+// ─── HEIF/HEIC decoder ───────────────────────────────────────────────────────
+// WIC-first: Windows HEIF Image Extensions kuruluysa donanım hızlandırmalı
+// (GPU) decode kullanır. Çoğu Windows 11 sisteminde yüklü gelir; Windows 10'da
+// Microsoft Store'dan ücretsiz kurulabilir. Codec yoksa libheif'e düşülür.
+
+static bool TryDecodeHEIFWithWIC(const std::wstring& path, DecodeOutput& out)
+{
+    IWICImagingFactory2* pFactory = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory2, nullptr,
+        CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFactory))))
+        return false;
+
+    // HEIF codec kurulu değilse burada WINCODEC_ERR_COMPONENTNOTFOUND döner
+    IWICBitmapDecoder* pDecoder = nullptr;
+    HRESULT hr = pFactory->CreateDecoderFromFilename(
+        path.c_str(), nullptr, GENERIC_READ,
+        WICDecodeMetadataCacheOnLoad, &pDecoder);
+    if (FAILED(hr)) { pFactory->Release(); return false; }
+
+    IWICBitmapFrameDecode* pFrame = nullptr;
+    hr = pDecoder->GetFrame(0, &pFrame);
+    if (FAILED(hr)) { pDecoder->Release(); pFactory->Release(); return false; }
+
+    // GUID_WICPixelFormat32bppPBGRA: premultiplied BGRA — mevcut libheif
+    // çıktısıyla aynı format. WIC HEIF codec, HEIF container'daki döndürme/
+    // çevirme dönüşümlerini otomatik olarak uygular.
+    IWICFormatConverter* pConvert = nullptr;
+    pFactory->CreateFormatConverter(&pConvert);
+    hr = pConvert->Initialize(pFrame, GUID_WICPixelFormat32bppPBGRA,
+        WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeCustom);
+    pFrame->Release();
+    if (FAILED(hr))
+    {
+        pConvert->Release(); pDecoder->Release(); pFactory->Release();
+        return false;
+    }
+
+    UINT w = 0, h = 0;
+    pConvert->GetSize(&w, &h);
+    const UINT stride  = w * 4;
+    const UINT bufSize = stride * h;
+    out.pixels.resize(bufSize);
+    hr = pConvert->CopyPixels(nullptr, stride, bufSize, out.pixels.data());
+
+    pConvert->Release();
+    pDecoder->Release();
+    pFactory->Release();
+
+    if (FAILED(hr)) { out.pixels.clear(); return false; }
+
+    out.width  = w;
+    out.height = h;
+    out.format = L"HEIC";
+    return true;
+}
 
 static bool DecodeHEIF(const std::wstring& path, DecodeOutput& out)
 {
+    // WIC-first: donanım hızlandırmalı decode — başarısızsa libheif'e düş
+    if (TryDecodeHEIFWithWIC(path, out))
+    {
+        // Pikseller WIC'ten geldi; EXIF/GPS alanlarını hızlı metadata
+        // extract ile doldur (~10-20ms, piksel decode yok)
+        DecodeOutput metaOnly;
+        if (ExtractImageMeta(path, metaOnly))
+        {
+            out.dateTaken    = metaOnly.dateTaken;
+            out.cameraMake   = metaOnly.cameraMake;
+            out.cameraModel  = metaOnly.cameraModel;
+            out.aperture     = metaOnly.aperture;
+            out.shutterSpeed = metaOnly.shutterSpeed;
+            out.iso          = metaOnly.iso;
+            out.gpsLatitude  = metaOnly.gpsLatitude;
+            out.gpsLongitude = metaOnly.gpsLongitude;
+            out.gpsAltitude  = metaOnly.gpsAltitude;
+            out.hasGpsDecimal  = metaOnly.hasGpsDecimal;
+            out.gpsLatDecimal  = metaOnly.gpsLatDecimal;
+            out.gpsLonDecimal  = metaOnly.gpsLonDecimal;
+            out.iccProfileName = metaOnly.iccProfileName;
+        }
+        return true;
+    }
+
+    // Fallback: libheif + libde265 (yazılım H.265 decode)
     auto data = ReadFileBytes(path);
     if (data.empty()) return false;
 

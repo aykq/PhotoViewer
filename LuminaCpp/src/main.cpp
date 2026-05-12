@@ -170,6 +170,9 @@ static std::unordered_set<std::wstring>                  g_prefetchDesired;
 
 // Aynı anda en fazla 4 ağır decode (CPU thrash önlemi: her biri ~100ms, 6 foto/sn için yeterli)
 static std::counting_semaphore<16>                       g_prefetchSemaphore{4};
+// HEIC/HEIF için ek throttle: max 2 eş zamanlı; libheif fallback aktifken
+// yazılım H.265 decode'un CPU'yu doyurmasını önler
+static std::counting_semaphore<4>                        g_heicPrefetchSemaphore{2};
 
 // --- Dizin değişiklik izleyici ---
 static HANDLE       g_watchStopEvent = nullptr;  // manuel-reset event; set edilince thread durur
@@ -448,6 +451,20 @@ static void StartPrefetch(const std::wstring& path)
     {
         CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
+        // HEIC/HEIF: libheif fallback'te yazılım H.265 decode CPU yoğun olduğundan
+        // ayrı throttle uygula; WIC path aktifse bu overhead ihmal edilebilir düzeyde
+        std::wstring prefExt;
+        {
+            auto dot = path.rfind(L'.');
+            if (dot != std::wstring::npos)
+            {
+                prefExt = path.substr(dot + 1);
+                for (auto& c : prefExt) c = towupper(c);
+            }
+        }
+        const bool isHeicPrefetch = (prefExt == L"HEIC" || prefExt == L"HEIF");
+
+        if (isHeicPrefetch) g_heicPrefetchSemaphore.acquire();
         g_prefetchSemaphore.acquire();   // CPU thrash önlemi: max 4 eş zamanlı decode
 
         auto* result = new DecodeResult();
@@ -456,6 +473,7 @@ static void StartPrefetch(const std::wstring& path)
         DoDecodeToResult(result, /*fetchLocation=*/false);
 
         g_prefetchSemaphore.release();
+        if (isHeicPrefetch) g_heicPrefetchSemaphore.release();
 
         CoUninitialize();
 
