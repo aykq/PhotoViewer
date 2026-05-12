@@ -858,6 +858,8 @@ void Renderer::Render(const ViewState& vs, const ImageInfo* info)
         float destX = (availW - destW) * 0.5f + vs.panX;
         float destY = (availH - destH) * 0.5f + vs.panY;
 
+        m_imageDisplayRect = D2D1::RectF(destX, destY, destX + destW, destY + destH);
+
         if (vs.showRotateFreeDialog && fabsf(vs.rotateFreeAngle) > 0.01f)
         {
             float imgCX = destX + destW * 0.5f;
@@ -885,6 +887,7 @@ void Renderer::Render(const ViewState& vs, const ImageInfo* info)
     DrawDeleteConfirmDialog(vs, info); // Modal dialog — en üst katman
     DrawResizeDialog(vs);              // Resize modal — en üst katman
     DrawRotateFreeDialog(vs);          // Serbest döndürme modal — en üst katman
+    DrawCropDialog(vs);                // Kırpma modu — en üst katman
 
     // Zoom indicator: sağ alt köşe (alpha fade)
     if (vs.zoomIndicatorAlpha > 0.01f && m_textFormat && m_whiteBrush && m_overlayBrush)
@@ -1077,6 +1080,37 @@ static void DrawResizeIcon(ID2D1HwndRenderTarget* rt, ID2D1SolidColorBrush* brus
     }
 }
 
+// Kırpma ikonu: iki L-şekli köşe + çapraz kılavuz çizgisi (makas efekti)
+static void DrawCropIcon(ID2D1HwndRenderTarget* rt, ID2D1SolidColorBrush* brush,
+                          float cx, float cy, float strokeW)
+{
+    constexpr float half = 8.5f;   // ikonun yarı genişliği/yüksekliği
+    constexpr float arm  = 5.5f;   // L kolunun uzunluğu
+    constexpr float gap  = 2.2f;   // merkeze boşluk
+
+    // Sol-üst L köşesi
+    rt->DrawLine({cx - half, cy - half + arm}, {cx - half, cy - half}, brush, strokeW);
+    rt->DrawLine({cx - half, cy - half}, {cx - half + arm, cy - half}, brush, strokeW);
+
+    // Sağ-üst L köşesi
+    rt->DrawLine({cx + half - arm, cy - half}, {cx + half, cy - half}, brush, strokeW);
+    rt->DrawLine({cx + half, cy - half}, {cx + half, cy - half + arm}, brush, strokeW);
+
+    // Sol-alt L köşesi
+    rt->DrawLine({cx - half, cy + half - arm}, {cx - half, cy + half}, brush, strokeW);
+    rt->DrawLine({cx - half, cy + half}, {cx - half + arm, cy + half}, brush, strokeW);
+
+    // Sağ-alt L köşesi
+    rt->DrawLine({cx + half - arm, cy + half}, {cx + half, cy + half}, brush, strokeW);
+    rt->DrawLine({cx + half, cy + half}, {cx + half, cy + half - arm}, brush, strokeW);
+
+    // Merkez çapraz kılavuz çizgileri (kırpma ikonunun tipik stilini taklit eder)
+    rt->DrawLine({cx - gap, cy}, {cx - half + arm * 0.6f, cy}, brush, strokeW * 0.7f);
+    rt->DrawLine({cx + gap, cy}, {cx + half - arm * 0.6f, cy}, brush, strokeW * 0.7f);
+    rt->DrawLine({cx, cy - gap}, {cx, cy - half + arm * 0.6f}, brush, strokeW * 0.7f);
+    rt->DrawLine({cx, cy + gap}, {cx, cy + half - arm * 0.6f}, brush, strokeW * 0.7f);
+}
+
 void Renderer::DrawEditToolbar(const ViewState& vs)
 {
     m_editToolbarVisible = false;
@@ -1099,8 +1133,8 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
     constexpr float kMarginTop = 16.0f;
     constexpr float kStrokeW   = 2.2f;
 
-    // 4 buton: ↺ CCW | ↻ CW | ↗ Serbest | ⤢ Resize
-    const float totalW = kBtnSize * 4.0f + kGap * 3.0f;
+    // 5 buton: ↺ CCW | ↻ CW | ↗ Serbest | ⤢ Resize | ✂ Kırp
+    const float totalW = kBtnSize * 5.0f + kGap * 4.0f;
     const float startX = (availW - totalW) * 0.5f;
     const float btnY   = kMarginTop;
 
@@ -1157,6 +1191,64 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
         float cx = btn4X + kBtnSize * 0.5f;
         float cy = btnY  + kBtnSize * 0.5f;
         DrawResizeIcon(m_renderTarget, m_whiteBrush, cx, cy, kStrokeW);
+    }
+
+    // ✂ Kırp — beşinci buton
+    const float btn5X = btn4X + kBtnSize + kGap;
+    m_editBtnCropRect = D2D1::RectF(btn5X, btnY, btn5X + kBtnSize, btnY + kBtnSize);
+    {
+        D2D1_ROUNDED_RECT rr = { m_editBtnCropRect, kBtnRadius, kBtnRadius };
+        m_renderTarget->FillRoundedRectangle(rr,
+            (vs.editBtnCropPressed || vs.showCropDialog) ? m_activeBrush : m_panelBgBrush);
+        float cx = btn5X + kBtnSize * 0.5f;
+        float cy = btnY  + kBtnSize * 0.5f;
+        DrawCropIcon(m_renderTarget, m_whiteBrush, cx, cy, kStrokeW);
+    }
+
+    // Tooltip — hover'daki butonun altında fade-in etiket
+    if (vs.editToolbarHoverBtn >= 1 && vs.editToolbarHoverBtn <= 5 && m_btnFormat && m_separatorBrush
+        && vs.editToolbarTooltipAlpha > 0.01f)
+    {
+        static const wchar_t* kTips[]  = { L"Sola döndür", L"Sağa döndür", L"Serbest döndür", L"Yeniden boyutlandır", L"Kırp" };
+        static const float    kTipWs[] = { 110.0f, 110.0f, 140.0f, 180.0f, 72.0f };
+        const int   tipIdx = vs.editToolbarHoverBtn - 1;
+        const float tipW   = kTipWs[tipIdx];
+        const float tipH   = 26.0f;
+        const float tip    = vs.editToolbarTooltipAlpha;
+
+        float btnCX = 0.0f;
+        switch (vs.editToolbarHoverBtn) {
+            case 1: btnCX = startX + kBtnSize * 0.5f; break;
+            case 2: btnCX = btn2X  + kBtnSize * 0.5f; break;
+            case 3: btnCX = btn3X  + kBtnSize * 0.5f; break;
+            case 4: btnCX = btn4X  + kBtnSize * 0.5f; break;
+            default: btnCX = btn5X + kBtnSize * 0.5f; break;
+        }
+
+        float tipLeft = btnCX - tipW * 0.5f;
+        float tipTop  = btnY + kBtnSize + 6.0f;
+        if (tipLeft < 4.0f) tipLeft = 4.0f;
+        if (tipLeft + tipW > availW - 4.0f) tipLeft = availW - 4.0f - tipW;
+
+        D2D1_RECT_F        tipRect = D2D1::RectF(tipLeft, tipTop, tipLeft + tipW, tipTop + tipH);
+        D2D1_ROUNDED_RECT  tipRR   = { tipRect, 5.0f, 5.0f };
+
+        // tip alpha'yı mevcut (zaten alpha-modifiye) opaklığın üstüne uygula
+        float op1 = m_panelBgBrush->GetOpacity();
+        float op2 = m_whiteBrush->GetOpacity();
+        float op3 = m_separatorBrush->GetOpacity();
+        m_panelBgBrush->SetOpacity(op1 * tip);
+        m_whiteBrush->SetOpacity(op2 * tip);
+        m_separatorBrush->SetOpacity(op3 * alpha * tip);
+
+        m_renderTarget->FillRoundedRectangle(tipRR, m_panelBgBrush);
+        m_renderTarget->DrawRoundedRectangle(tipRR, m_separatorBrush, 1.0f);
+        m_renderTarget->DrawText(kTips[tipIdx], static_cast<UINT32>(wcslen(kTips[tipIdx])),
+                                  m_btnFormat, tipRect, m_whiteBrush);
+
+        m_panelBgBrush->SetOpacity(op1);
+        m_whiteBrush->SetOpacity(op2);
+        m_separatorBrush->SetOpacity(op3);
     }
 
     m_panelBgBrush->SetOpacity(savedPanelOp);
@@ -1452,7 +1544,7 @@ void Renderer::DrawResizeDialog(const ViewState& vs)
         } else {
             m_renderTarget->FillRoundedRectangle(rr, bg);
         }
-        const wchar_t* lockLbl = L"⛓ Oran koru";
+        const wchar_t* lockLbl = L"Oran koru";
         m_renderTarget->DrawText(lockLbl, static_cast<UINT32>(wcslen(lockLbl)),
                                   m_btnFormat, m_resizeDlgLockRect, m_whiteBrush);
     }
@@ -1764,6 +1856,197 @@ void Renderer::DrawRotateFreeDialog(const ViewState& vs)
     DrawMainBtn(m_rotFreeDlgResetRect,  btn1L, m_separatorBrush, L"Sıfırla", 5);
     DrawMainBtn(m_rotFreeDlgCancelRect, btn2L, m_separatorBrush, L"İptal",   6);
     DrawMainBtn(m_rotFreeDlgApplyRect,  btn3L, m_saveBtnBrush,   L"Uygula",  7);
+}
+
+// ─── Kırpma Dialogu ───────────────────────────────────────────────────────────
+// Görüntü üzerinde kırpma seçimi + oran butonları + İptal/Uygula
+
+void Renderer::DrawCropDialog(const ViewState& vs)
+{
+    m_cropDlgVisible = false;
+    if (!vs.showCropDialog) return;
+    if (!m_panelBgBrush || !m_separatorBrush || !m_whiteBrush || !m_grayBrush
+     || !m_overlayBrush  || !m_btnFormat     || !m_activeBrush || !m_saveBtnBrush) return;
+    if (m_imageDisplayRect.right <= m_imageDisplayRect.left) return;
+
+    m_cropDlgVisible = true;
+
+    const float imgX0 = m_imageDisplayRect.left;
+    const float imgY0 = m_imageDisplayRect.top;
+    const float imgW  = m_imageDisplayRect.right  - m_imageDisplayRect.left;
+    const float imgH  = m_imageDisplayRect.bottom - m_imageDisplayRect.top;
+
+    // Kırpma rect'ini piksel koordinatlarına çevir
+    const float cx0 = imgX0 + vs.cropX0 * imgW;
+    const float cy0 = imgY0 + vs.cropY0 * imgH;
+    const float cx1 = imgX0 + vs.cropX1 * imgW;
+    const float cy1 = imgY0 + vs.cropY1 * imgH;
+
+    D2D1_SIZE_F sz = m_renderTarget->GetSize();
+
+    // ── Dış karartma (kırpma dışı alan) ─────────────────────────────────────
+    {
+        float op = m_overlayBrush->GetOpacity();
+        m_overlayBrush->SetOpacity(0.60f);
+        // Üst
+        if (cy0 > 0.0f)
+            m_renderTarget->FillRectangle(D2D1::RectF(0, 0, sz.width, cy0), m_overlayBrush);
+        // Alt
+        if (cy1 < sz.height)
+            m_renderTarget->FillRectangle(D2D1::RectF(0, cy1, sz.width, sz.height), m_overlayBrush);
+        // Sol (kırpma yüksekliği arasında)
+        if (cx0 > 0.0f)
+            m_renderTarget->FillRectangle(D2D1::RectF(0, cy0, cx0, cy1), m_overlayBrush);
+        // Sağ (kırpma yüksekliği arasında)
+        if (cx1 < sz.width)
+            m_renderTarget->FillRectangle(D2D1::RectF(cx1, cy0, sz.width, cy1), m_overlayBrush);
+        m_overlayBrush->SetOpacity(op);
+    }
+
+    // ── Kırpma sınır çizgisi ─────────────────────────────────────────────────
+    m_renderTarget->DrawRectangle(D2D1::RectF(cx0, cy0, cx1, cy1), m_whiteBrush, 1.5f);
+
+    // ── Üçte bir kılavuz çizgileri ────────────────────────────────────────────
+    {
+        float op = m_whiteBrush->GetOpacity();
+        m_whiteBrush->SetOpacity(op * 0.28f);
+        float dx = (cx1 - cx0) / 3.0f;
+        float dy = (cy1 - cy0) / 3.0f;
+        m_renderTarget->DrawLine({cx0 + dx, cy0}, {cx0 + dx, cy1}, m_whiteBrush, 0.8f);
+        m_renderTarget->DrawLine({cx0 + 2.0f * dx, cy0}, {cx0 + 2.0f * dx, cy1}, m_whiteBrush, 0.8f);
+        m_renderTarget->DrawLine({cx0, cy0 + dy}, {cx1, cy0 + dy}, m_whiteBrush, 0.8f);
+        m_renderTarget->DrawLine({cx0, cy0 + 2.0f * dy}, {cx1, cy0 + 2.0f * dy}, m_whiteBrush, 0.8f);
+        m_whiteBrush->SetOpacity(op);
+    }
+
+    // ── Köşe ve kenar tutamaçları ─────────────────────────────────────────────
+    constexpr float kHW  = 9.0f;   // tutamaç yarı genişliği
+    constexpr float kHT  = 3.0f;   // tutamaç kalınlığı
+    float midX = (cx0 + cx1) * 0.5f;
+    float midY = (cy0 + cy1) * 0.5f;
+
+    auto DrawHandle = [&](float hx, float hy) {
+        m_renderTarget->FillRectangle(
+            D2D1::RectF(hx - kHW, hy - kHT, hx + kHW, hy + kHT), m_whiteBrush);
+        m_renderTarget->FillRectangle(
+            D2D1::RectF(hx - kHT, hy - kHW, hx + kHT, hy + kHW), m_whiteBrush);
+    };
+
+    // 4 köşe
+    DrawHandle(cx0, cy0);
+    DrawHandle(cx1, cy0);
+    DrawHandle(cx0, cy1);
+    DrawHandle(cx1, cy1);
+    // 4 kenar ortası
+    DrawHandle(midX, cy0);
+    DrawHandle(midX, cy1);
+    DrawHandle(cx0, midY);
+    DrawHandle(cx1, midY);
+
+    // ── Alt panel: oran butonları + İptal/Uygula ──────────────────────────────
+    constexpr float kBarH    = 52.0f;
+    constexpr float kBarW    = 512.0f;
+    constexpr float kRadii   = 10.0f;
+    constexpr float kBtnH    = 32.0f;
+    constexpr float kRatioW  = 60.0f;
+    constexpr float kActionW = 72.0f;
+    constexpr float kGap     =  6.0f;
+    constexpr float kPadX    = 12.0f;
+
+    const float barBottom = sz.height - vs.stripAnimHeight - 16.0f;
+    const float barTop    = barBottom - kBarH;
+    const float barLeft   = (sz.width - vs.panelAnimWidth - kBarW) * 0.5f;
+    const float barRight  = barLeft + kBarW;
+
+    D2D1_ROUNDED_RECT barRR = { D2D1::RectF(barLeft, barTop, barRight, barBottom), kRadii, kRadii };
+    m_renderTarget->FillRoundedRectangle(barRR, m_panelBgBrush);
+    m_renderTarget->DrawRoundedRectangle(barRR, m_separatorBrush, 1.0f);
+
+    const float btnTop = barTop + (kBarH - kBtnH) * 0.5f;
+
+    // Oran butonları: Serbest | 1:1 | 4:3 | 3:2 | 16:9
+    static const wchar_t* kRatioLabels[] = { L"Serbest", L"1:1", L"4:3", L"3:2", L"16:9" };
+    float rx = barLeft + kPadX;
+    for (int i = 0; i < 5; ++i)
+    {
+        m_cropDlgRatioRects[i] = D2D1::RectF(rx, btnTop, rx + kRatioW, btnTop + kBtnH);
+        D2D1_ROUNDED_RECT rr = { m_cropDlgRatioRects[i], 7.0f, 7.0f };
+        bool active  = (vs.cropAspectMode == i);
+        bool pressed = (vs.cropDlgPressedBtn == i + 1);
+        bool hover   = (vs.cropDlgHoverBtn   == i + 1);
+
+        if (active)
+        {
+            float op = m_activeBrush->GetOpacity();
+            m_activeBrush->SetOpacity(0.85f);
+            m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+            m_activeBrush->SetOpacity(op);
+        }
+        else
+        {
+            m_renderTarget->FillRoundedRectangle(rr, m_separatorBrush);
+            if (pressed)
+            {
+                float op = m_activeBrush->GetOpacity();
+                m_activeBrush->SetOpacity(0.50f);
+                m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+                m_activeBrush->SetOpacity(op);
+            }
+            else if (hover)
+            {
+                float op = m_activeBrush->GetOpacity();
+                m_activeBrush->SetOpacity(0.25f);
+                m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+                m_activeBrush->SetOpacity(op);
+            }
+        }
+        m_renderTarget->DrawText(kRatioLabels[i], static_cast<UINT32>(wcslen(kRatioLabels[i])),
+                                  m_btnFormat, m_cropDlgRatioRects[i], m_whiteBrush);
+        rx += kRatioW + kGap;
+    }
+
+    // İptal butonu
+    const float cancelLeft = barRight - kPadX - kActionW * 2.0f - kGap;
+    m_cropDlgCancelRect = D2D1::RectF(cancelLeft, btnTop, cancelLeft + kActionW, btnTop + kBtnH);
+    {
+        D2D1_ROUNDED_RECT rr = { m_cropDlgCancelRect, 7.0f, 7.0f };
+        bool pressed = (vs.cropDlgPressedBtn == 6);
+        bool hover   = (vs.cropDlgHoverBtn   == 6);
+        m_renderTarget->FillRoundedRectangle(rr, m_separatorBrush);
+        if (pressed || hover)
+        {
+            float op = m_activeBrush->GetOpacity();
+            m_activeBrush->SetOpacity(pressed ? 0.50f : 0.25f);
+            m_renderTarget->FillRoundedRectangle(rr, m_activeBrush);
+            m_activeBrush->SetOpacity(op);
+        }
+        m_renderTarget->DrawText(L"İptal", 5, m_btnFormat, m_cropDlgCancelRect, m_whiteBrush);
+    }
+
+    // Uygula butonu
+    const float applyLeft = cancelLeft + kActionW + kGap;
+    m_cropDlgApplyRect = D2D1::RectF(applyLeft, btnTop, applyLeft + kActionW, btnTop + kBtnH);
+    {
+        D2D1_ROUNDED_RECT rr = { m_cropDlgApplyRect, 7.0f, 7.0f };
+        bool pressed = (vs.cropDlgPressedBtn == 7);
+        bool hover   = (vs.cropDlgHoverBtn   == 7);
+        m_renderTarget->FillRoundedRectangle(rr, m_saveBtnBrush);
+        if (pressed)
+        {
+            float op = m_overlayBrush->GetOpacity();
+            m_overlayBrush->SetOpacity(0.30f);
+            m_renderTarget->FillRoundedRectangle(rr, m_overlayBrush);
+            m_overlayBrush->SetOpacity(op);
+        }
+        else if (hover)
+        {
+            float op = m_whiteBrush->GetOpacity();
+            m_whiteBrush->SetOpacity(0.12f);
+            m_renderTarget->FillRoundedRectangle(rr, m_whiteBrush);
+            m_whiteBrush->SetOpacity(op);
+        }
+        m_renderTarget->DrawText(L"Uygula", 6, m_btnFormat, m_cropDlgApplyRect, m_whiteBrush);
+    }
 }
 
 void Renderer::Resize(UINT width, UINT height)

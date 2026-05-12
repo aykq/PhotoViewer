@@ -50,6 +50,8 @@ static constexpr UINT_PTR kCopyFeedbackTimerID  = 9;  // 1.5s kopyala feedback s
 static constexpr UINT_PTR kEditToolbarIdleTimerID = 10; // 2s hareketsizlik → edit toolbar fade başlar
 static constexpr UINT_PTR kEditToolbarFadeTimerID = 11; // edit toolbar alpha animasyonu
 static constexpr UINT_PTR kDirChangeTimerID       = 12; // dizin değişikliği debounce (200ms)
+static constexpr UINT_PTR kTooltipDelayTimerID    = 13; // 500ms hover bekle → tooltip başlat
+static constexpr UINT_PTR kTooltipFadeTimerID     = 14; // tooltip fade-in animasyonu
 
 // Animasyon timer aralığı — 7ms ≈ 143fps (timeBeginPeriod(1) ile hassas çalışır)
 static constexpr UINT     kAnimIntervalMs       = 7;
@@ -68,6 +70,7 @@ static LARGE_INTEGER      g_stripAnimLastTime   = {};
 static LARGE_INTEGER      g_indexFadeLastTime   = {};
 static LARGE_INTEGER      g_zoomFadeLastTime           = {};
 static LARGE_INTEGER      g_editToolbarFadeLastTime    = {};
+static LARGE_INTEGER      g_tooltipFadeLastTime        = {};
 
 // --- Arka plan decode ---
 
@@ -539,6 +542,14 @@ static bool  g_mouseTracking     = false;  // TrackMouseEvent kaydı aktif mi
 static bool  g_clickInToolbar            = false;  // Edit toolbar butonu tıklaması
 static bool  g_clickInSaveBar            = false;  // Save bar butonu tıklaması
 static bool  g_rotFreeDlgSliderDragging  = false;  // Serbest döndürme slider sürükleniyor
+static bool  g_cropDragging             = false;   // Kırpma tutamaç sürükleniyor
+static int   g_cropDragHandle           = 0;       // Hangi tutamaç: 0=yok,1-4=köşe,5-8=kenar,9=taşı
+static float g_cropDragAnchorX         = 0.0f;    // Sürükleme başlangıç fare X (ekran)
+static float g_cropDragAnchorY         = 0.0f;
+static float g_cropDragSavedX0         = 0.0f;    // Sürükleme başlangıcındaki cropX0
+static float g_cropDragSavedY0         = 0.0f;
+static float g_cropDragSavedX1         = 0.0f;
+static float g_cropDragSavedY1         = 0.0f;
 
 
 // --- Yardımcı: arrow zone hit-test ---
@@ -1210,9 +1221,13 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
     g_edit.pixels.clear();
     g_viewState.editDirty      = false;
     g_viewState.editIsAnimated = false;
-    g_viewState.editToolbarAlpha = 0.0f;
+    g_viewState.editToolbarAlpha       = 0.0f;
+    g_viewState.editToolbarHoverBtn    = 0;
+    g_viewState.editToolbarTooltipAlpha = 0.0f;
     KillTimer(hwnd, kEditToolbarIdleTimerID);
     KillTimer(hwnd, kEditToolbarFadeTimerID);
+    KillTimer(hwnd, kTooltipDelayTimerID);
+    KillTimer(hwnd, kTooltipFadeTimerID);
 
     bool  keepPanel      = g_viewState.showInfoPanel;
     float keepAnimWidth  = g_viewState.panelAnimWidth;
@@ -1584,6 +1599,220 @@ static void CropPixelsCenter(std::vector<uint8_t>& pixels, UINT& width, UINT& he
     pixels = std::move(dst);
     width  = newW;
     height = newH;
+}
+
+// Piksel tamponunu keyfi dikdörtgenden kırp (piksel koordinatları)
+static void CropPixelsRect(std::vector<uint8_t>& pixels, UINT& width, UINT& height,
+                            UINT x0, UINT y0, UINT x1, UINT y1)
+{
+    x0 = min(x0, width);  x1 = min(x1, width);
+    y0 = min(y0, height); y1 = min(y1, height);
+    if (x0 >= x1 || y0 >= y1) return;
+    UINT newW = x1 - x0, newH = y1 - y0;
+    if (newW == width && newH == height && x0 == 0 && y0 == 0) return;
+    std::vector<uint8_t> dst(static_cast<size_t>(newW) * newH * 4);
+    for (UINT y = 0; y < newH; ++y)
+    {
+        const uint8_t* src = &pixels[((y0 + y) * width + x0) * 4];
+        uint8_t*       d   = &dst[y * newW * 4];
+        memcpy(d, src, static_cast<size_t>(newW) * 4);
+    }
+    pixels = std::move(dst);
+    width  = newW;
+    height = newH;
+}
+
+// Görüntü ekran rect'ini hesapla (kırpma koordinat dönüşümü için)
+static D2D1_RECT_F ComputeImageDisplayRect(HWND hwnd)
+{
+    if (!g_renderer || g_edit.pixels.empty()) return {};
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    float availW = static_cast<float>(rc.right)  - g_viewState.panelAnimWidth;
+    float availH = static_cast<float>(rc.bottom) - g_viewState.stripAnimHeight;
+    float imgW   = static_cast<float>(g_edit.width);
+    float imgH   = static_cast<float>(g_edit.height);
+    if (imgW <= 0.0f || imgH <= 0.0f) return {};
+    float fitScale   = min(availW / imgW, availH / imgH);
+    float finalScale = fitScale * g_viewState.zoomFactor;
+    float destW = imgW * finalScale;
+    float destH = imgH * finalScale;
+    float destX = (availW - destW) * 0.5f + g_viewState.panX;
+    float destY = (availH - destH) * 0.5f + g_viewState.panY;
+    return D2D1::RectF(destX, destY, destX + destW, destY + destH);
+}
+
+// Kırpma modunu aç — tam görüntü ile başlar, normalize oran korunur
+static void DoOpenCropDialog(HWND hwnd)
+{
+    if (g_edit.pixels.empty() || g_viewState.editIsAnimated) return;
+    if (g_isSaving.load()) return;
+    g_viewState.cropX0            = 0.0f;
+    g_viewState.cropY0            = 0.0f;
+    g_viewState.cropX1            = 1.0f;
+    g_viewState.cropY1            = 1.0f;
+    g_viewState.cropAspectMode    = 0;
+    g_viewState.cropDlgHoverBtn   = 0;
+    g_viewState.cropDlgPressedBtn = 0;
+    g_viewState.showCropDialog    = true;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// Kırpma onay — normalize koordinatları piksele çevir ve kırp
+static void DoApplyCrop(HWND hwnd)
+{
+    if (g_edit.pixels.empty()) return;
+    float nx0 = g_viewState.cropX0, ny0 = g_viewState.cropY0;
+    float nx1 = g_viewState.cropX1, ny1 = g_viewState.cropY1;
+    if (nx0 > nx1) { float t = nx0; nx0 = nx1; nx1 = t; }
+    if (ny0 > ny1) { float t = ny0; ny0 = ny1; ny1 = t; }
+
+    const UINT x0 = static_cast<UINT>(nx0 * static_cast<float>(g_edit.width)  + 0.5f);
+    const UINT y0 = static_cast<UINT>(ny0 * static_cast<float>(g_edit.height) + 0.5f);
+    const UINT x1 = static_cast<UINT>(nx1 * static_cast<float>(g_edit.width)  + 0.5f);
+    const UINT y1 = static_cast<UINT>(ny1 * static_cast<float>(g_edit.height) + 0.5f);
+
+    g_viewState.showCropDialog    = false;
+    g_viewState.cropDlgHoverBtn   = 0;
+    g_viewState.cropDlgPressedBtn = 0;
+
+    if (x1 <= x0 + 1 || y1 <= y0 + 1)
+    {
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+
+    CropPixelsRect(g_edit.pixels, g_edit.width, g_edit.height, x0, y0, x1, y1);
+    g_edit.isDirty        = true;
+    g_viewState.editDirty = true;
+    g_viewState.editToolbarAlpha = 1.0f;
+    KillTimer(hwnd, kEditToolbarFadeTimerID);
+    KillTimer(hwnd, kEditToolbarIdleTimerID);
+    DoApplyEdit(hwnd);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// Kırpma rect'ini oran moduna göre kare hale getir (cx0/cy0 sabit, cx1/cy1 ayarlanır)
+static void ApplyCropAspectConstraint(float imgW, float imgH)
+{
+    if (g_viewState.cropAspectMode == 0) return;
+
+    float ratioW = 1.0f, ratioH = 1.0f;
+    switch (g_viewState.cropAspectMode) {
+        case 1: ratioW = 1.0f; ratioH = 1.0f; break;
+        case 2: ratioW = 4.0f; ratioH = 3.0f; break;
+        case 3: ratioW = 3.0f; ratioH = 2.0f; break;
+        case 4: ratioW = 16.0f; ratioH = 9.0f; break;
+    }
+
+    // Piksel koordinatında mevcut seçim genişlik/yüksekliği
+    float selW = (g_viewState.cropX1 - g_viewState.cropX0) * imgW;
+    float selH = (g_viewState.cropY1 - g_viewState.cropY0) * imgH;
+    if (selW <= 0.0f || selH <= 0.0f) return;
+
+    // Daha büyük olan boyutu baz al, diğerini oran ile hesapla
+    float newWpx = selW;
+    float newHpx = selW * ratioH / ratioW;
+    if (newHpx > selH) { newHpx = selH; newWpx = selH * ratioW / ratioH; }
+
+    // Normalize
+    float newW = newWpx / imgW;
+    float newH = newHpx / imgH;
+
+    // Mevcut seçimin merkezi etrafında ortala, sınırları kırp
+    float centerX = (g_viewState.cropX0 + g_viewState.cropX1) * 0.5f;
+    float centerY = (g_viewState.cropY0 + g_viewState.cropY1) * 0.5f;
+    float halfW   = newW * 0.5f;
+    float halfH   = newH * 0.5f;
+    if (centerX - halfW < 0.0f) centerX = halfW;
+    if (centerX + halfW > 1.0f) centerX = 1.0f - halfW;
+    if (centerY - halfH < 0.0f) centerY = halfH;
+    if (centerY + halfH > 1.0f) centerY = 1.0f - halfH;
+    g_viewState.cropX0 = centerX - halfW;
+    g_viewState.cropY0 = centerY - halfH;
+    g_viewState.cropX1 = centerX + halfW;
+    g_viewState.cropY1 = centerY + halfH;
+}
+
+// Drag sırasında oran kilidi — sürüklenen tutamaca göre karşı köşeyi/kenarı sabit tutar
+static void ApplyCropAspectConstraintDrag(float imgW, float imgH, int handle)
+{
+    if (g_viewState.cropAspectMode == 0 || handle == 9) return;
+
+    float ratioW = 1.0f, ratioH = 1.0f;
+    switch (g_viewState.cropAspectMode) {
+        case 1: ratioW = 1.0f;  ratioH = 1.0f;  break;
+        case 2: ratioW = 4.0f;  ratioH = 3.0f;  break;
+        case 3: ratioW = 3.0f;  ratioH = 2.0f;  break;
+        case 4: ratioW = 16.0f; ratioH = 9.0f;  break;
+        default: return;
+    }
+
+    float& x0 = g_viewState.cropX0;
+    float& y0 = g_viewState.cropY0;
+    float& x1 = g_viewState.cropX1;
+    float& y1 = g_viewState.cropY1;
+
+    float selWpx = (x1 - x0) * imgW;
+    float selHpx = (y1 - y0) * imgH;
+    if (selWpx <= 0.0f || selHpx <= 0.0f) return;
+
+    auto hFromW = [&](float w) { return w * ratioH / ratioW; };
+    auto wFromH = [&](float h) { return h * ratioW / ratioH; };
+
+    // Köşeler: her iki boyutu da oran kilitli (küçük olanı baz al)
+    auto fitCorner = [&](float& outW, float& outH) {
+        outW = selWpx; outH = hFromW(selWpx);
+        if (outH > selHpx) { outH = selHpx; outW = wFromH(selHpx); }
+    };
+
+    float nW, nH;
+    switch (handle) {
+    case 1:  // TL — BR sabit
+        fitCorner(nW, nH);
+        x0 = x1 - nW / imgW;  y0 = y1 - nH / imgH;
+        break;
+    case 2:  // TR — BL sabit
+        fitCorner(nW, nH);
+        x1 = x0 + nW / imgW;  y0 = y1 - nH / imgH;
+        break;
+    case 3:  // BL — TR sabit
+        fitCorner(nW, nH);
+        x0 = x1 - nW / imgW;  y1 = y0 + nH / imgH;
+        break;
+    case 4:  // BR — TL sabit
+        fitCorner(nW, nH);
+        x1 = x0 + nW / imgW;  y1 = y0 + nH / imgH;
+        break;
+    case 5: {  // üst kenar — alt + yatay merkez
+        nH = selHpx;  nW = wFromH(nH);
+        float cx = (x0 + x1) * 0.5f, hw = nW * 0.5f / imgW;
+        x0 = max(0.0f, cx - hw);  x1 = min(1.0f, cx + hw);
+        y0 = y1 - nH / imgH;
+        break;
+    }
+    case 6: {  // alt kenar — üst + yatay merkez
+        nH = selHpx;  nW = wFromH(nH);
+        float cx = (x0 + x1) * 0.5f, hw = nW * 0.5f / imgW;
+        x0 = max(0.0f, cx - hw);  x1 = min(1.0f, cx + hw);
+        y1 = y0 + nH / imgH;
+        break;
+    }
+    case 7: {  // sol kenar — sağ + dikey merkez
+        nW = selWpx;  nH = hFromW(nW);
+        float cy = (y0 + y1) * 0.5f, hh = nH * 0.5f / imgH;
+        y0 = max(0.0f, cy - hh);  y1 = min(1.0f, cy + hh);
+        x0 = x1 - nW / imgW;
+        break;
+    }
+    case 8: {  // sağ kenar — sol + dikey merkez
+        nW = selWpx;  nH = hFromW(nW);
+        float cy = (y0 + y1) * 0.5f, hh = nH * 0.5f / imgH;
+        y0 = max(0.0f, cy - hh);  y1 = min(1.0f, cy + hh);
+        x1 = x0 + nW / imgW;
+        break;
+    }
+    }
 }
 
 static void DoOpenRotateFreeDialog(HWND hwnd)
@@ -1974,6 +2203,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
         }
 
+        // Kırpma modu açıkken zoom yapma
+        if (g_viewState.showCropDialog) return 0;
+
         // zoomTarget baz alınır — hızlı scroll'da her tick önceki hedef üstüne biner
         float newZoom = g_viewState.zoomTarget * (delta > 0 ? 1.15f : (1.0f / 1.15f));
         ApplyZoom(hwnd, cx, cy, newZoom);
@@ -1986,6 +2218,86 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         float mx = static_cast<float>(GET_X_LPARAM(lParam));
         float my = static_cast<float>(GET_Y_LPARAM(lParam));
+
+        // Kırpma modu açıksa — tutamaç sürükleme / buton tıklaması
+        if (g_viewState.showCropDialog)
+        {
+            if (g_renderer && g_renderer->IsCropDlgVisible())
+            {
+                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+
+                // Oran butonları ve İptal/Uygula tıklaması
+                for (int i = 0; i < 5; ++i)
+                    if (inR(mx, my, g_renderer->GetCropDlgRatioRect(i)))
+                    {
+                        g_viewState.cropDlgPressedBtn = i + 1;
+                        SetCapture(hwnd);
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                if (inR(mx, my, g_renderer->GetCropDlgCancelRect()))
+                {
+                    g_viewState.cropDlgPressedBtn = 6;
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (inR(mx, my, g_renderer->GetCropDlgApplyRect()))
+                {
+                    g_viewState.cropDlgPressedBtn = 7;
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+
+                // Tutamaç hit testi
+                D2D1_RECT_F imgR = g_renderer->GetImageDisplayRect();
+                float imgW = imgR.right - imgR.left;
+                float imgH = imgR.bottom - imgR.top;
+                if (imgW > 0.0f && imgH > 0.0f)
+                {
+                    float cx0 = imgR.left + g_viewState.cropX0 * imgW;
+                    float cy0 = imgR.top  + g_viewState.cropY0 * imgH;
+                    float cx1 = imgR.left + g_viewState.cropX1 * imgW;
+                    float cy1 = imgR.top  + g_viewState.cropY1 * imgH;
+                    float midX = (cx0 + cx1) * 0.5f;
+                    float midY = (cy0 + cy1) * 0.5f;
+                    constexpr float kHitR = 12.0f;
+
+                    auto hitHandle = [&](float hx, float hy) {
+                        return fabsf(mx - hx) <= kHitR && fabsf(my - hy) <= kHitR;
+                    };
+
+                    int handle = 0;
+                    if      (hitHandle(cx0, cy0))  handle = 1;  // TL köşe
+                    else if (hitHandle(cx1, cy0))  handle = 2;  // TR köşe
+                    else if (hitHandle(cx0, cy1))  handle = 3;  // BL köşe
+                    else if (hitHandle(cx1, cy1))  handle = 4;  // BR köşe
+                    else if (hitHandle(midX, cy0)) handle = 5;  // üst kenar
+                    else if (hitHandle(midX, cy1)) handle = 6;  // alt kenar
+                    else if (hitHandle(cx0, midY)) handle = 7;  // sol kenar
+                    else if (hitHandle(cx1, midY)) handle = 8;  // sağ kenar
+                    else if (mx > cx0 && mx < cx1 && my > cy0 && my < cy1) handle = 9;  // taşı
+
+                    if (handle != 0)
+                    {
+                        g_cropDragging      = true;
+                        g_cropDragHandle    = handle;
+                        g_cropDragAnchorX   = mx;
+                        g_cropDragAnchorY   = my;
+                        g_cropDragSavedX0   = g_viewState.cropX0;
+                        g_cropDragSavedY0   = g_viewState.cropY0;
+                        g_cropDragSavedX1   = g_viewState.cropX1;
+                        g_cropDragSavedY1   = g_viewState.cropY1;
+                        SetCapture(hwnd);
+                        return 0;
+                    }
+                }
+            }
+            return 0;
+        }
 
         // Serbest döndürme dialogu açıksa — slider/buton etkileşimi, diğerini engelle
         if (g_viewState.showRotateFreeDialog)
@@ -2103,21 +2415,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             // Edit toolbar butonu tıklaması
             if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
             {
+                auto inR2 = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
                 D2D1_RECT_F rL   = g_renderer->GetEditBtnRotLRect();
                 D2D1_RECT_F rR   = g_renderer->GetEditBtnRotRRect();
                 D2D1_RECT_F rFr  = g_renderer->GetEditBtnRotFreeRect();
                 D2D1_RECT_F rRz  = g_renderer->GetEditBtnResizeRect();
-                bool hitL  = (mx >= rL.left  && mx <= rL.right  && my >= rL.top  && my <= rL.bottom);
-                bool hitR  = (mx >= rR.left  && mx <= rR.right  && my >= rR.top  && my <= rR.bottom);
-                bool hitFr = (mx >= rFr.left && mx <= rFr.right && my >= rFr.top && my <= rFr.bottom);
-                bool hitRz = (mx >= rRz.left && mx <= rRz.right && my >= rRz.top && my <= rRz.bottom);
-                if (hitL || hitR || hitFr || hitRz)
+                D2D1_RECT_F rCr  = g_renderer->GetEditBtnCropRect();
+                bool hitL  = inR2(mx, my, rL);
+                bool hitR  = inR2(mx, my, rR);
+                bool hitFr = inR2(mx, my, rFr);
+                bool hitRz = inR2(mx, my, rRz);
+                bool hitCr = inR2(mx, my, rCr);
+                if (hitL || hitR || hitFr || hitRz || hitCr)
                 {
                     g_clickInToolbar = true;
                     g_viewState.editBtnRotLPressed    = hitL;
                     g_viewState.editBtnRotRPressed    = hitR;
                     g_viewState.editBtnRotFreePressed = hitFr;
                     g_viewState.editBtnResizePressed  = hitRz;
+                    g_viewState.editBtnCropPressed    = hitCr;
                     InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -2203,6 +2521,95 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         float mx = static_cast<float>(GET_X_LPARAM(lParam));
         float my = static_cast<float>(GET_Y_LPARAM(lParam));
+
+        // Kırpma modu açıksa — drag güncelle veya hover güncelle
+        if (g_viewState.showCropDialog)
+        {
+            if (g_cropDragging && g_renderer)
+            {
+                D2D1_RECT_F imgR = g_renderer->GetImageDisplayRect();
+                float imgW = imgR.right - imgR.left;
+                float imgH = imgR.bottom - imgR.top;
+                if (imgW > 0.0f && imgH > 0.0f)
+                {
+                    float ndx = (mx - g_cropDragAnchorX) / imgW;
+                    float ndy = (my - g_cropDragAnchorY) / imgH;
+                    constexpr float kMinSize = 0.03f;
+
+                    float x0 = g_cropDragSavedX0, y0 = g_cropDragSavedY0;
+                    float x1 = g_cropDragSavedX1, y1 = g_cropDragSavedY1;
+
+                    switch (g_cropDragHandle) {
+                    case 1: x0 = x0 + ndx; y0 = y0 + ndy; break;  // TL
+                    case 2: x1 = x1 + ndx; y0 = y0 + ndy; break;  // TR
+                    case 3: x0 = x0 + ndx; y1 = y1 + ndy; break;  // BL
+                    case 4: x1 = x1 + ndx; y1 = y1 + ndy; break;  // BR
+                    case 5: y0 = y0 + ndy; break;                   // üst
+                    case 6: y1 = y1 + ndy; break;                   // alt
+                    case 7: x0 = x0 + ndx; break;                   // sol
+                    case 8: x1 = x1 + ndx; break;                   // sağ
+                    case 9:  // taşı
+                    {
+                        float w = x1 - x0, h = y1 - y0;
+                        x0 = x0 + ndx; x1 = x0 + w;
+                        y0 = y0 + ndy; y1 = y0 + h;
+                        if (x0 < 0.0f) { x0 = 0.0f; x1 = w; }
+                        if (x1 > 1.0f) { x1 = 1.0f; x0 = 1.0f - w; }
+                        if (y0 < 0.0f) { y0 = 0.0f; y1 = h; }
+                        if (y1 > 1.0f) { y1 = 1.0f; y0 = 1.0f - h; }
+                        break;
+                    }
+                    }
+
+                    // Sınır ve minimum boyut
+                    if (g_cropDragHandle != 9)
+                    {
+                        x0 = max(0.0f, min(x0, 1.0f));
+                        y0 = max(0.0f, min(y0, 1.0f));
+                        x1 = max(0.0f, min(x1, 1.0f));
+                        y1 = max(0.0f, min(y1, 1.0f));
+                        if (x1 < x0 + kMinSize) {
+                            if (g_cropDragHandle == 1 || g_cropDragHandle == 3 || g_cropDragHandle == 7)
+                                x0 = x1 - kMinSize;
+                            else
+                                x1 = x0 + kMinSize;
+                        }
+                        if (y1 < y0 + kMinSize) {
+                            if (g_cropDragHandle == 1 || g_cropDragHandle == 2 || g_cropDragHandle == 5)
+                                y0 = y1 - kMinSize;
+                            else
+                                y1 = y0 + kMinSize;
+                        }
+                    }
+
+                    g_viewState.cropX0 = x0; g_viewState.cropY0 = y0;
+                    g_viewState.cropX1 = x1; g_viewState.cropY1 = y1;
+
+                    // Oran kilidi varsa uygula — drag'de karşı köşe/kenar sabit kalır
+                    if (g_viewState.cropAspectMode != 0)
+                        ApplyCropAspectConstraintDrag(imgW, imgH, g_cropDragHandle);
+
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            else if (g_renderer && g_renderer->IsCropDlgVisible())
+            {
+                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+                int newHover = 0;
+                for (int i = 0; i < 5; ++i)
+                    if (inR(mx, my, g_renderer->GetCropDlgRatioRect(i))) { newHover = i + 1; break; }
+                if (!newHover && inR(mx, my, g_renderer->GetCropDlgCancelRect())) newHover = 6;
+                if (!newHover && inR(mx, my, g_renderer->GetCropDlgApplyRect()))  newHover = 7;
+                if (newHover != g_viewState.cropDlgHoverBtn)
+                {
+                    g_viewState.cropDlgHoverBtn = newHover;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            return 0;
+        }
 
         // Serbest döndürme dialogu açıksa — slider sürükleme + hover güncelle
         if (g_viewState.showRotateFreeDialog)
@@ -2316,6 +2723,40 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
         }
 
+        // Edit toolbar buton hover — tooltip tetikleyicisi
+        if (g_renderer && g_renderer->IsEditToolbarVisible()
+            && !g_viewState.showCropDialog && !g_viewState.showResizeDialog && !g_viewState.showRotateFreeDialog)
+        {
+            auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+            };
+            int newHov = 0;
+            if      (inR(mx, my, g_renderer->GetEditBtnRotLRect()))    newHov = 1;
+            else if (inR(mx, my, g_renderer->GetEditBtnRotRRect()))    newHov = 2;
+            else if (inR(mx, my, g_renderer->GetEditBtnRotFreeRect())) newHov = 3;
+            else if (inR(mx, my, g_renderer->GetEditBtnResizeRect()))  newHov = 4;
+            else if (inR(mx, my, g_renderer->GetEditBtnCropRect()))    newHov = 5;
+            if (newHov != g_viewState.editToolbarHoverBtn)
+            {
+                g_viewState.editToolbarHoverBtn    = newHov;
+                g_viewState.editToolbarTooltipAlpha = 0.0f;
+                KillTimer(hwnd, kTooltipFadeTimerID);
+                if (newHov != 0)
+                    SetTimer(hwnd, kTooltipDelayTimerID, 500, nullptr);
+                else
+                    KillTimer(hwnd, kTooltipDelayTimerID);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+        }
+        else if (g_viewState.editToolbarHoverBtn != 0)
+        {
+            g_viewState.editToolbarHoverBtn    = 0;
+            g_viewState.editToolbarTooltipAlpha = 0.0f;
+            KillTimer(hwnd, kTooltipDelayTimerID);
+            KillTimer(hwnd, kTooltipFadeTimerID);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+
         // Save bar hover — hangi butonun üzerinde olduğunu güncelle
         if (g_renderer && g_renderer->IsSaveBarVisible())
         {
@@ -2361,6 +2802,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             QueryPerformanceCounter(&g_editToolbarFadeLastTime);
             SetTimer(hwnd, kEditToolbarFadeTimerID, kAnimIntervalMs, nullptr);
         }
+        if (g_viewState.editToolbarHoverBtn != 0 || g_viewState.editToolbarTooltipAlpha > 0.0f)
+        {
+            g_viewState.editToolbarHoverBtn    = 0;
+            g_viewState.editToolbarTooltipAlpha = 0.0f;
+            KillTimer(hwnd, kTooltipDelayTimerID);
+            KillTimer(hwnd, kTooltipFadeTimerID);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
         if (g_viewState.saveBarHover != 0 || g_viewState.saveBarPressedBtn != 0)
         {
             g_viewState.saveBarHover      = 0;
@@ -2373,6 +2822,62 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         float mx = static_cast<float>(GET_X_LPARAM(lParam));
         float my = static_cast<float>(GET_Y_LPARAM(lParam));
+
+        // Kırpma modu açıksa — drag bırakma / buton eylemi
+        if (g_viewState.showCropDialog)
+        {
+            if (g_cropDragging)
+            {
+                g_cropDragging = false;
+                g_cropDragHandle = 0;
+                ReleaseCapture();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            int pressed = g_viewState.cropDlgPressedBtn;
+            g_viewState.cropDlgPressedBtn = 0;
+            ReleaseCapture();
+
+            if (g_renderer && g_renderer->IsCropDlgVisible() && pressed != 0)
+            {
+                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+
+                if (pressed >= 1 && pressed <= 5)
+                {
+                    // Oran butonu
+                    if (inR(mx, my, g_renderer->GetCropDlgRatioRect(pressed - 1)))
+                    {
+                        g_viewState.cropAspectMode = pressed - 1;
+                        if (g_viewState.cropAspectMode != 0)
+                        {
+                            D2D1_RECT_F imgR = g_renderer->GetImageDisplayRect();
+                            float imgW = imgR.right - imgR.left;
+                            float imgH = imgR.bottom - imgR.top;
+                            if (imgW > 0.0f && imgH > 0.0f)
+                                ApplyCropAspectConstraint(imgW, imgH);
+                        }
+                    }
+                }
+                else if (pressed == 6)  // İptal
+                {
+                    if (inR(mx, my, g_renderer->GetCropDlgCancelRect()))
+                    {
+                        g_viewState.showCropDialog    = false;
+                        g_viewState.cropDlgHoverBtn   = 0;
+                        g_viewState.cropDlgPressedBtn = 0;
+                    }
+                }
+                else if (pressed == 7)  // Uygula
+                {
+                    if (inR(mx, my, g_renderer->GetCropDlgApplyRect()))
+                        DoApplyCrop(hwnd);
+                }
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
 
         // Serbest döndürme dialogu açıksa — slider bırakma / buton eylemi
         if (g_viewState.showRotateFreeDialog)
@@ -2568,10 +3073,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             bool wasR   = g_viewState.editBtnRotRPressed;
             bool wasFr  = g_viewState.editBtnRotFreePressed;
             bool wasRz  = g_viewState.editBtnResizePressed;
+            bool wasCr  = g_viewState.editBtnCropPressed;
             g_viewState.editBtnRotLPressed    = false;
             g_viewState.editBtnRotRPressed    = false;
             g_viewState.editBtnRotFreePressed = false;
             g_viewState.editBtnResizePressed  = false;
+            g_viewState.editBtnCropPressed    = false;
             g_clickInToolbar = false;
             float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
             if (delta < 5.0f)
@@ -2580,6 +3087,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 else if (wasR)   DoRotateCW(hwnd);
                 else if (wasFr)  DoOpenRotateFreeDialog(hwnd);
                 else if (wasRz)  DoOpenResizeDialog(hwnd);
+                else if (wasCr)  DoOpenCropDialog(hwnd);
             }
             else
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -2787,8 +3295,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float cx = static_cast<float>(GET_X_LPARAM(lParam));
         float cy = static_cast<float>(GET_Y_LPARAM(lParam));
 
-        // Yeniden boyutlandır / serbest döndürme dialogu açıkken çift tıklama ile zoom yapma
-        if (g_viewState.showResizeDialog || g_viewState.showRotateFreeDialog) return 0;
+        // Yeniden boyutlandır / serbest döndürme / kırpma dialogu açıkken çift tıklama ile zoom yapma
+        if (g_viewState.showResizeDialog || g_viewState.showRotateFreeDialog || g_viewState.showCropDialog) return 0;
 
         // Edit toolbar butonlarında çift tıklamayı engelle — hızlı ardışık döndürme desteği
         if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
@@ -2894,6 +3402,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_KEYDOWN:
         ResetIndexIdleTimer(hwnd);
+
+        // Kırpma modu açıksa — Escape=kapat, Enter=uygula
+        if (g_viewState.showCropDialog)
+        {
+            if (wParam == VK_ESCAPE)
+            {
+                g_viewState.showCropDialog    = false;
+                g_viewState.cropDlgHoverBtn   = 0;
+                g_viewState.cropDlgPressedBtn = 0;
+                g_cropDragging   = false;
+                g_cropDragHandle = 0;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            else if (wParam == VK_RETURN)
+                DoApplyCrop(hwnd);
+            return 0;
+        }
 
         // Serbest döndürme dialogu açıksa — Escape=kapat, Enter=uygula, ←/→=ince ayar
         if (g_viewState.showRotateFreeDialog)
@@ -3046,6 +3571,33 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             {
                 g_viewState.zoomIndicatorAlpha = 0.0f;
                 KillTimer(hwnd, kZoomFadeTimerID);
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        else if (wParam == kTooltipDelayTimerID)
+        {
+            KillTimer(hwnd, kTooltipDelayTimerID);
+            if (g_viewState.editToolbarHoverBtn != 0)
+            {
+                QueryPerformanceCounter(&g_tooltipFadeLastTime);
+                SetTimer(hwnd, kTooltipFadeTimerID, kAnimIntervalMs, nullptr);
+            }
+        }
+        else if (wParam == kTooltipFadeTimerID)
+        {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            float dt = static_cast<float>(now.QuadPart - g_tooltipFadeLastTime.QuadPart)
+                       / static_cast<float>(g_qpcFreq.QuadPart);
+            g_tooltipFadeLastTime = now;
+            dt = min(dt, 0.1f);
+
+            constexpr float kFadeSpeed = 10.0f;  // ~100ms'de tam görünür
+            g_viewState.editToolbarTooltipAlpha += dt * kFadeSpeed;
+            if (g_viewState.editToolbarTooltipAlpha >= 1.0f)
+            {
+                g_viewState.editToolbarTooltipAlpha = 1.0f;
+                KillTimer(hwnd, kTooltipFadeTimerID);
             }
             InvalidateRect(hwnd, nullptr, FALSE);
         }
@@ -3452,6 +4004,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         KillTimer(hwnd, kCopyFeedbackTimerID);
         KillTimer(hwnd, kEditToolbarIdleTimerID);
         KillTimer(hwnd, kEditToolbarFadeTimerID);
+        KillTimer(hwnd, kTooltipDelayTimerID);
+        KillTimer(hwnd, kTooltipFadeTimerID);
         KillTimer(hwnd, kDirChangeTimerID);
         StopLocationPrefetchThread();
         SaveLocationCache();

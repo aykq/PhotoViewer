@@ -129,6 +129,8 @@ struct ViewState
     bool  editBtnRotRPressed    = false;  // ↻ (CW)  butonu basılı
     bool  editBtnRotFreePressed = false;  // serbest döndür butonu basılı
     bool  editBtnResizePressed  = false;  // Resize butonu basılı (press highlight)
+    int   editToolbarHoverBtn   = 0;      // 0=yok, 1=CCW, 2=CW, 3=Free, 4=Resize, 5=Kırp
+    float editToolbarTooltipAlpha = 0.0f; // tooltip fade-in opaklığı (0=gizli, 1=tam)
 
     // Serbest döndürme dialog
     bool  showRotateFreeDialog  = false;
@@ -157,6 +159,17 @@ struct ViewState
     bool  showUnsavedWarningDialog = false;  // "Kaydedilmemiş değişiklik" uyarı ekranı
     int   deleteDlgHoverBtn        = 0;      // 0=yok, 1=İptal/Tamam, 2=Sil
     int   deleteDlgPressedBtn      = 0;      // basılı buton (press highlight)
+
+    // Kırpma modu
+    bool  showCropDialog     = false;
+    int   cropAspectMode     = 0;     // 0=Serbest, 1=1:1, 2=4:3, 3=3:2, 4=16:9
+    float cropX0             = 0.0f;  // image-normalized [0..1]
+    float cropY0             = 0.0f;
+    float cropX1             = 1.0f;
+    float cropY1             = 1.0f;
+    int   cropDlgHoverBtn    = 0;     // 0=yok, 1-5=oran, 6=iptal, 7=uygula
+    int   cropDlgPressedBtn  = 0;
+    bool  editBtnCropPressed = false;
 };
 
 // Renderer: Direct2D render target yönetimi + WIC görüntü yükleme
@@ -242,6 +255,18 @@ public:
     // Resize butonu (edit toolbar, 3. buton) — WndProc tıklama testi için
     D2D1_RECT_F GetEditBtnResizeRect()     const { return m_editBtnResizeRect; }
 
+    // Kırpma butonu (edit toolbar, 5. buton)
+    D2D1_RECT_F GetEditBtnCropRect()       const { return m_editBtnCropRect; }
+
+    // Kırpma dialog rect'leri — WndProc hit testi için
+    bool        IsCropDlgVisible()         const { return m_cropDlgVisible; }
+    D2D1_RECT_F GetCropDlgCancelRect()     const { return m_cropDlgCancelRect; }
+    D2D1_RECT_F GetCropDlgApplyRect()      const { return m_cropDlgApplyRect; }
+    D2D1_RECT_F GetCropDlgRatioRect(int i) const { return m_cropDlgRatioRects[i]; }  // i: 0-4
+
+    // Son render'da hesaplanan görüntü ekran rect'i — kırpma hit testi için
+    D2D1_RECT_F GetImageDisplayRect()      const { return m_imageDisplayRect; }
+
     // Resize dialog rect'leri — WndProc etkileşim testi için
     bool        IsResizeDialogVisible()    const { return m_resizeDlgVisible; }
     D2D1_RECT_F GetResizeDlgCancelRect()   const { return m_resizeDlgCancelRect; }
@@ -311,6 +336,8 @@ private:
     void DrawResizeDialog(const ViewState& vs);
     // Serbest döndürme dialogu
     void DrawRotateFreeDialog(const ViewState& vs);
+    // Kırpma dialogu
+    void DrawCropDialog(const ViewState& vs);
 
     HWND                   m_hwnd         = nullptr;
     ID2D1Factory*          m_factory      = nullptr;   // Direct2D fabrikası (cihazdan bağımsız)
@@ -386,6 +413,7 @@ private:
     D2D1_RECT_F m_editBtnRotLRect    = {};
     D2D1_RECT_F m_editBtnRotRRect    = {};
     D2D1_RECT_F m_editBtnResizeRect  = {};
+    D2D1_RECT_F m_editBtnCropRect    = {};
     bool        m_editToolbarVisible = false;
 
     // Delete butonu — her Render'da güncellenir (info butonunun solunda)
@@ -421,6 +449,15 @@ private:
     D2D1_RECT_F m_saveBarDiscardRect = {};
     D2D1_RECT_F m_saveBarSaveAsRect  = {};
     bool        m_saveBarVisible     = false;
+
+    // Kırpma dialog rect'leri — DrawCropDialog her çizimde günceller
+    D2D1_RECT_F m_cropDlgCancelRect     = {};
+    D2D1_RECT_F m_cropDlgApplyRect      = {};
+    D2D1_RECT_F m_cropDlgRatioRects[5]  = {};  // Serbest | 1:1 | 4:3 | 3:2 | 16:9
+    bool        m_cropDlgVisible        = false;
+
+    // Son render'daki görüntü ekran rect'i — kırpma koordinat dönüşümü için
+    D2D1_RECT_F m_imageDisplayRect = {};
 
     // Silme onay dialogu buton rect'leri — her Render'da güncellenir
     D2D1_RECT_F m_dlgCancelRect = {};

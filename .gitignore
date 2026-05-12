@@ -378,3 +378,5 @@ scripts/
 
 # Installer build output
 installer/output/
+memory/feedback_build.md
+memory/MEMORY.md
