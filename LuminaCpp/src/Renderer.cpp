@@ -1119,7 +1119,7 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
 {
     m_editToolbarVisible = false;
     if (vs.editIsAnimated) return;
-    if (!m_bitmap) return;           // statik görsel yok
+    if (!m_bitmap) return;
 
     float alpha = vs.editDirty ? 1.0f : vs.editToolbarAlpha;
     if (alpha <= 0.01f) return;
@@ -1128,8 +1128,8 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
 
     m_editToolbarVisible = true;
 
-    D2D1_SIZE_F sz     = m_renderTarget->GetSize();
-    float availW       = sz.width - vs.panelAnimWidth;
+    D2D1_SIZE_F sz   = m_renderTarget->GetSize();
+    float availW     = sz.width - vs.panelAnimWidth;
 
     constexpr float kBtnSize   = 40.0f;
     constexpr float kBtnRadius = 8.0f;
@@ -1137,12 +1137,20 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
     constexpr float kMarginTop = 16.0f;
     constexpr float kStrokeW   = 2.2f;
 
-    // 5 buton: ↺ CCW | ↻ CW | ↗ Serbest | ⤢ Resize | ✂ Kırp
-    const float totalW = kBtnSize * 5.0f + kGap * 4.0f;
-    const float startX = (availW - totalW) * 0.5f;
-    const float btnY   = kMarginTop;
+    // Toolbar genişliği editMoreAlpha ile interpolate: 3 btn (kapalı) → 6 btn (açık)
+    const float collapsedW = kBtnSize * 3.0f + kGap * 2.0f;   // [↺][↻][···]
+    const float expandedW  = kBtnSize * 6.0f + kGap * 5.0f;   // [↺][↻][···][↗][⤢][✂]
+    const float totalW     = collapsedW + (expandedW - collapsedW) * vs.editMoreAlpha;
+    const float startX     = (availW - totalW) * 0.5f;
+    const float btnY       = kMarginTop;
 
-    // Geçici alpha uygulaması
+    const float btn1X = startX;
+    const float btn2X = btn1X + kBtnSize + kGap;
+    const float btn3X = btn2X + kBtnSize + kGap;  // ···
+    const float btn4X = btn3X + kBtnSize + kGap;  // ↗
+    const float btn5X = btn4X + kBtnSize + kGap;  // ⤢
+    const float btn6X = btn5X + kBtnSize + kGap;  // ✂
+
     float savedPanelOp  = m_panelBgBrush->GetOpacity();
     float savedWhiteOp  = m_whiteBrush->GetOpacity();
     float savedActiveOp = m_activeBrush->GetOpacity();
@@ -1150,71 +1158,99 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
     m_whiteBrush->SetOpacity(savedWhiteOp   * alpha);
     m_activeBrush->SetOpacity(savedActiveOp * alpha);
 
-    // ↺ Döndür CCW — sol buton
-    m_editBtnRotLRect = D2D1::RectF(startX, btnY, startX + kBtnSize, btnY + kBtnSize);
+    // [1] ↺ Döndür CCW
+    m_editBtnRotLRect = D2D1::RectF(btn1X, btnY, btn1X + kBtnSize, btnY + kBtnSize);
     {
         D2D1_ROUNDED_RECT rr = { m_editBtnRotLRect, kBtnRadius, kBtnRadius };
         m_renderTarget->FillRoundedRectangle(rr,
             vs.editBtnRotLPressed ? m_activeBrush : m_panelBgBrush);
-        float cx = startX + kBtnSize * 0.5f;
-        float cy = btnY   + kBtnSize * 0.5f;
-        DrawRotateIcon(m_renderTarget, m_factory, m_whiteBrush, cx, cy, false, kStrokeW);
+        DrawRotateIcon(m_renderTarget, m_factory, m_whiteBrush,
+            btn1X + kBtnSize * 0.5f, btnY + kBtnSize * 0.5f, false, kStrokeW);
     }
 
-    // ↻ Döndür CW — orta buton
-    const float btn2X = startX + kBtnSize + kGap;
+    // [2] ↻ Döndür CW
     m_editBtnRotRRect = D2D1::RectF(btn2X, btnY, btn2X + kBtnSize, btnY + kBtnSize);
     {
         D2D1_ROUNDED_RECT rr = { m_editBtnRotRRect, kBtnRadius, kBtnRadius };
         m_renderTarget->FillRoundedRectangle(rr,
             vs.editBtnRotRPressed ? m_activeBrush : m_panelBgBrush);
-        float cx = btn2X + kBtnSize * 0.5f;
-        float cy = btnY  + kBtnSize * 0.5f;
-        DrawRotateIcon(m_renderTarget, m_factory, m_whiteBrush, cx, cy, true, kStrokeW);
+        DrawRotateIcon(m_renderTarget, m_factory, m_whiteBrush,
+            btn2X + kBtnSize * 0.5f, btnY + kBtnSize * 0.5f, true, kStrokeW);
     }
 
-    // ↗ Serbest döndür — üçüncü buton
-    const float btn3X = btn2X + kBtnSize + kGap;
-    m_editBtnRotFreeRect = D2D1::RectF(btn3X, btnY, btn3X + kBtnSize, btnY + kBtnSize);
+    // [3] ··· Araçlar (genişlet/daralt)
+    m_editBtnMoreRect = D2D1::RectF(btn3X, btnY, btn3X + kBtnSize, btnY + kBtnSize);
     {
-        D2D1_ROUNDED_RECT rr = { m_editBtnRotFreeRect, kBtnRadius, kBtnRadius };
-        m_renderTarget->FillRoundedRectangle(rr,
-            vs.editBtnRotFreePressed ? m_activeBrush : m_panelBgBrush);
+        D2D1_ROUNDED_RECT rr = { m_editBtnMoreRect, kBtnRadius, kBtnRadius };
+        bool moreActive = vs.editBtnMorePressed || vs.editMoreExpanded;
+        m_renderTarget->FillRoundedRectangle(rr, moreActive ? m_activeBrush : m_panelBgBrush);
         float cx = btn3X + kBtnSize * 0.5f;
         float cy = btnY  + kBtnSize * 0.5f;
-        DrawFreeRotateIcon(m_renderTarget, m_whiteBrush, cx, cy, kStrokeW);
+        constexpr float kDotR  = 2.3f;
+        constexpr float kDotSp = 7.5f;
+        m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - kDotSp, cy), kDotR, kDotR), m_whiteBrush);
+        m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx,          cy), kDotR, kDotR), m_whiteBrush);
+        m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + kDotSp, cy), kDotR, kDotR), m_whiteBrush);
     }
 
-    // ⤢ Yeniden Boyutlandır — dördüncü buton
-    const float btn4X = btn3X + kBtnSize + kGap;
-    m_editBtnResizeRect = D2D1::RectF(btn4X, btnY, btn4X + kBtnSize, btnY + kBtnSize);
+    // [4,5,6] Genişletilmiş araçlar — editMoreAlpha ile fade-in
+    if (vs.editMoreAlpha > 0.01f)
     {
-        D2D1_ROUNDED_RECT rr = { m_editBtnResizeRect, kBtnRadius, kBtnRadius };
-        m_renderTarget->FillRoundedRectangle(rr,
-            vs.editBtnResizePressed ? m_activeBrush : m_panelBgBrush);
-        float cx = btn4X + kBtnSize * 0.5f;
-        float cy = btnY  + kBtnSize * 0.5f;
-        DrawResizeIcon(m_renderTarget, m_whiteBrush, cx, cy, kStrokeW);
-    }
+        float panOp = m_panelBgBrush->GetOpacity();
+        float whtOp = m_whiteBrush->GetOpacity();
+        float actOp = m_activeBrush->GetOpacity();
+        m_panelBgBrush->SetOpacity(panOp * vs.editMoreAlpha);
+        m_whiteBrush->SetOpacity(whtOp * vs.editMoreAlpha);
+        m_activeBrush->SetOpacity(actOp * vs.editMoreAlpha);
 
-    // ✂ Kırp — beşinci buton
-    const float btn5X = btn4X + kBtnSize + kGap;
-    m_editBtnCropRect = D2D1::RectF(btn5X, btnY, btn5X + kBtnSize, btnY + kBtnSize);
+        // [4] ↗ Serbest döndür
+        m_editBtnRotFreeRect = D2D1::RectF(btn4X, btnY, btn4X + kBtnSize, btnY + kBtnSize);
+        {
+            D2D1_ROUNDED_RECT rr = { m_editBtnRotFreeRect, kBtnRadius, kBtnRadius };
+            m_renderTarget->FillRoundedRectangle(rr,
+                vs.editBtnRotFreePressed ? m_activeBrush : m_panelBgBrush);
+            DrawFreeRotateIcon(m_renderTarget, m_whiteBrush,
+                btn4X + kBtnSize * 0.5f, btnY + kBtnSize * 0.5f, kStrokeW);
+        }
+
+        // [5] ⤢ Yeniden Boyutlandır
+        m_editBtnResizeRect = D2D1::RectF(btn5X, btnY, btn5X + kBtnSize, btnY + kBtnSize);
+        {
+            D2D1_ROUNDED_RECT rr = { m_editBtnResizeRect, kBtnRadius, kBtnRadius };
+            m_renderTarget->FillRoundedRectangle(rr,
+                vs.editBtnResizePressed ? m_activeBrush : m_panelBgBrush);
+            DrawResizeIcon(m_renderTarget, m_whiteBrush,
+                btn5X + kBtnSize * 0.5f, btnY + kBtnSize * 0.5f, kStrokeW);
+        }
+
+        // [6] ✂ Kırp
+        m_editBtnCropRect = D2D1::RectF(btn6X, btnY, btn6X + kBtnSize, btnY + kBtnSize);
+        {
+            D2D1_ROUNDED_RECT rr = { m_editBtnCropRect, kBtnRadius, kBtnRadius };
+            m_renderTarget->FillRoundedRectangle(rr,
+                (vs.editBtnCropPressed || vs.showCropDialog) ? m_activeBrush : m_panelBgBrush);
+            DrawCropIcon(m_renderTarget, m_whiteBrush,
+                btn6X + kBtnSize * 0.5f, btnY + kBtnSize * 0.5f, kStrokeW);
+        }
+
+        m_panelBgBrush->SetOpacity(panOp);
+        m_whiteBrush->SetOpacity(whtOp);
+        m_activeBrush->SetOpacity(actOp);
+    }
+    else
     {
-        D2D1_ROUNDED_RECT rr = { m_editBtnCropRect, kBtnRadius, kBtnRadius };
-        m_renderTarget->FillRoundedRectangle(rr,
-            (vs.editBtnCropPressed || vs.showCropDialog) ? m_activeBrush : m_panelBgBrush);
-        float cx = btn5X + kBtnSize * 0.5f;
-        float cy = btnY  + kBtnSize * 0.5f;
-        DrawCropIcon(m_renderTarget, m_whiteBrush, cx, cy, kStrokeW);
+        m_editBtnRotFreeRect = {};
+        m_editBtnResizeRect  = {};
+        m_editBtnCropRect    = {};
     }
 
     // Tooltip — hover'daki butonun altında fade-in etiket
-    if (vs.editToolbarHoverBtn >= 1 && vs.editToolbarHoverBtn <= 5 && m_btnFormat && m_separatorBrush
+    if (vs.editToolbarHoverBtn >= 1 && vs.editToolbarHoverBtn <= 6 && m_btnFormat && m_separatorBrush
         && vs.editToolbarTooltipAlpha > 0.01f)
     {
-        static const wchar_t* kTips[]  = { L"Sola döndür", L"Sağa döndür", L"Serbest döndür", L"Yeniden boyutlandır", L"Kırp" };
-        static const float    kTipWs[] = { 110.0f, 110.0f, 140.0f, 180.0f, 72.0f };
+        static const wchar_t* kTips[]  = { L"Sola döndür", L"Sağa döndür", L"Araçlar",
+                                            L"Serbest döndür", L"Yeniden boyutlandır", L"Kırp" };
+        static const float    kTipWs[] = { 110.0f, 110.0f, 80.0f, 140.0f, 180.0f, 72.0f };
         const int   tipIdx = vs.editToolbarHoverBtn - 1;
         const float tipW   = kTipWs[tipIdx];
         const float tipH   = 26.0f;
@@ -1222,11 +1258,12 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
 
         float btnCX = 0.0f;
         switch (vs.editToolbarHoverBtn) {
-            case 1: btnCX = startX + kBtnSize * 0.5f; break;
-            case 2: btnCX = btn2X  + kBtnSize * 0.5f; break;
-            case 3: btnCX = btn3X  + kBtnSize * 0.5f; break;
-            case 4: btnCX = btn4X  + kBtnSize * 0.5f; break;
-            default: btnCX = btn5X + kBtnSize * 0.5f; break;
+            case 1: btnCX = btn1X + kBtnSize * 0.5f; break;
+            case 2: btnCX = btn2X + kBtnSize * 0.5f; break;
+            case 3: btnCX = btn3X + kBtnSize * 0.5f; break;
+            case 4: btnCX = btn4X + kBtnSize * 0.5f; break;
+            case 5: btnCX = btn5X + kBtnSize * 0.5f; break;
+            default: btnCX = btn6X + kBtnSize * 0.5f; break;
         }
 
         float tipLeft = btnCX - tipW * 0.5f;
@@ -1237,7 +1274,6 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
         D2D1_RECT_F        tipRect = D2D1::RectF(tipLeft, tipTop, tipLeft + tipW, tipTop + tipH);
         D2D1_ROUNDED_RECT  tipRR   = { tipRect, 5.0f, 5.0f };
 
-        // tip alpha'yı mevcut (zaten alpha-modifiye) opaklığın üstüne uygula
         float op1 = m_panelBgBrush->GetOpacity();
         float op2 = m_whiteBrush->GetOpacity();
         float op3 = m_separatorBrush->GetOpacity();

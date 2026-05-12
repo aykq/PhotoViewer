@@ -54,6 +54,7 @@ static constexpr UINT_PTR kTooltipDelayTimerID    = 13; // 500ms hover bekle →
 static constexpr UINT_PTR kTooltipFadeTimerID     = 14; // tooltip fade-in animasyonu
 static constexpr UINT_PTR kDialogFadeTimerID      = 16; // modal dialog fade-in
 static constexpr UINT_PTR kSaveBarFadeTimerID     = 17; // save bar fade-in
+static constexpr UINT_PTR kEditMoreFadeTimerID    = 18; // araçlar paneli genişleme animasyonu
 
 // Animasyon timer aralığı — 7ms ≈ 143fps (timeBeginPeriod(1) ile hassas çalışır)
 static constexpr UINT     kAnimIntervalMs       = 7;
@@ -65,6 +66,7 @@ static constexpr float    kZoomAnimSpeed        = 30.0f;
 static constexpr float    kStripAnimSpeed       = 25.0f;
 static constexpr float    kDialogFadeSpeed      = 30.0f;  // ~150ms 0→1
 static constexpr float    kSaveBarFadeSpeed     = 22.0f;  // ~210ms 0→1
+static constexpr float    kEditMoreFadeSpeed    = 28.0f;  // ~160ms 0→1
 
 // QPC frekansı ve son-tick zamanları — delta-time hesabı için
 static LARGE_INTEGER      g_qpcFreq             = {};
@@ -77,6 +79,7 @@ static LARGE_INTEGER      g_editToolbarFadeLastTime    = {};
 static LARGE_INTEGER      g_tooltipFadeLastTime        = {};
 static LARGE_INTEGER      g_dialogFadeLastTime         = {};
 static LARGE_INTEGER      g_saveBarFadeLastTime        = {};
+static LARGE_INTEGER      g_editMoreFadeLastTime       = {};
 
 // --- Arka plan decode ---
 
@@ -1238,6 +1241,7 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
     KillTimer(hwnd, kZoomAnimTimerID);
     KillTimer(hwnd, kDialogFadeTimerID);
     KillTimer(hwnd, kSaveBarFadeTimerID);
+    KillTimer(hwnd, kEditMoreFadeTimerID);
     if (g_renderer) g_renderer->ClearAnimation();
     UpdateWindowTitle(hwnd, path);
     ++g_thumbCancel;  // Eski thumbnail decode thread'lerini iptal et
@@ -1676,6 +1680,14 @@ static void DoOpenCropDialog(HWND hwnd)
 {
     if (g_edit.pixels.empty() || g_viewState.editIsAnimated) return;
     if (g_isSaving.load()) return;
+    // Zoom/pan hedefini sıfırla — animasyonlu olarak fit'e döner
+    if (g_viewState.zoomTarget != 1.0f || g_viewState.panXTarget != 0.0f || g_viewState.panYTarget != 0.0f)
+    {
+        g_viewState.zoomTarget  = 1.0f;
+        g_viewState.panXTarget  = 0.0f;
+        g_viewState.panYTarget  = 0.0f;
+        StartZoomAnim(hwnd);
+    }
     g_viewState.cropX0            = 0.0f;
     g_viewState.cropY0            = 0.0f;
     g_viewState.cropX1            = 1.0f;
@@ -2472,21 +2484,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 auto inR2 = [](float x, float y, const D2D1_RECT_F& r) {
                     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
                 };
-                D2D1_RECT_F rL   = g_renderer->GetEditBtnRotLRect();
-                D2D1_RECT_F rR   = g_renderer->GetEditBtnRotRRect();
-                D2D1_RECT_F rFr  = g_renderer->GetEditBtnRotFreeRect();
-                D2D1_RECT_F rRz  = g_renderer->GetEditBtnResizeRect();
-                D2D1_RECT_F rCr  = g_renderer->GetEditBtnCropRect();
-                bool hitL  = inR2(mx, my, rL);
-                bool hitR  = inR2(mx, my, rR);
-                bool hitFr = inR2(mx, my, rFr);
-                bool hitRz = inR2(mx, my, rRz);
-                bool hitCr = inR2(mx, my, rCr);
-                if (hitL || hitR || hitFr || hitRz || hitCr)
+                D2D1_RECT_F rL    = g_renderer->GetEditBtnRotLRect();
+                D2D1_RECT_F rR    = g_renderer->GetEditBtnRotRRect();
+                D2D1_RECT_F rMore = g_renderer->GetEditBtnMoreRect();
+                D2D1_RECT_F rFr   = g_renderer->GetEditBtnRotFreeRect();
+                D2D1_RECT_F rRz   = g_renderer->GetEditBtnResizeRect();
+                D2D1_RECT_F rCr   = g_renderer->GetEditBtnCropRect();
+                bool hitL    = inR2(mx, my, rL);
+                bool hitR    = inR2(mx, my, rR);
+                bool hitMore = inR2(mx, my, rMore);
+                bool hitFr   = inR2(mx, my, rFr);
+                bool hitRz   = inR2(mx, my, rRz);
+                bool hitCr   = inR2(mx, my, rCr);
+                if (hitL || hitR || hitMore || hitFr || hitRz || hitCr)
                 {
                     g_clickInToolbar = true;
                     g_viewState.editBtnRotLPressed    = hitL;
                     g_viewState.editBtnRotRPressed    = hitR;
+                    g_viewState.editBtnMorePressed    = hitMore;
                     g_viewState.editBtnRotFreePressed = hitFr;
                     g_viewState.editBtnResizePressed  = hitRz;
                     g_viewState.editBtnCropPressed    = hitCr;
@@ -2787,9 +2802,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             int newHov = 0;
             if      (inR(mx, my, g_renderer->GetEditBtnRotLRect()))    newHov = 1;
             else if (inR(mx, my, g_renderer->GetEditBtnRotRRect()))    newHov = 2;
-            else if (inR(mx, my, g_renderer->GetEditBtnRotFreeRect())) newHov = 3;
-            else if (inR(mx, my, g_renderer->GetEditBtnResizeRect()))  newHov = 4;
-            else if (inR(mx, my, g_renderer->GetEditBtnCropRect()))    newHov = 5;
+            else if (inR(mx, my, g_renderer->GetEditBtnMoreRect()))    newHov = 3;
+            else if (inR(mx, my, g_renderer->GetEditBtnRotFreeRect())) newHov = 4;
+            else if (inR(mx, my, g_renderer->GetEditBtnResizeRect()))  newHov = 5;
+            else if (inR(mx, my, g_renderer->GetEditBtnCropRect()))    newHov = 6;
             if (newHov != g_viewState.editToolbarHoverBtn)
             {
                 g_viewState.editToolbarHoverBtn    = newHov;
@@ -3123,13 +3139,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         // Edit toolbar butonu tıklaması
         if (g_clickInToolbar)
         {
-            bool wasL   = g_viewState.editBtnRotLPressed;
-            bool wasR   = g_viewState.editBtnRotRPressed;
-            bool wasFr  = g_viewState.editBtnRotFreePressed;
-            bool wasRz  = g_viewState.editBtnResizePressed;
-            bool wasCr  = g_viewState.editBtnCropPressed;
+            bool wasL    = g_viewState.editBtnRotLPressed;
+            bool wasR    = g_viewState.editBtnRotRPressed;
+            bool wasMore = g_viewState.editBtnMorePressed;
+            bool wasFr   = g_viewState.editBtnRotFreePressed;
+            bool wasRz   = g_viewState.editBtnResizePressed;
+            bool wasCr   = g_viewState.editBtnCropPressed;
             g_viewState.editBtnRotLPressed    = false;
             g_viewState.editBtnRotRPressed    = false;
+            g_viewState.editBtnMorePressed    = false;
             g_viewState.editBtnRotFreePressed = false;
             g_viewState.editBtnResizePressed  = false;
             g_viewState.editBtnCropPressed    = false;
@@ -3139,6 +3157,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             {
                 if (wasL)        DoRotateCCW(hwnd);
                 else if (wasR)   DoRotateCW(hwnd);
+                else if (wasMore)
+                {
+                    g_viewState.editMoreExpanded = !g_viewState.editMoreExpanded;
+                    QueryPerformanceCounter(&g_editMoreFadeLastTime);
+                    KillTimer(hwnd, kEditMoreFadeTimerID);
+                    SetTimer(hwnd, kEditMoreFadeTimerID, kAnimIntervalMs, nullptr);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
                 else if (wasFr)  DoOpenRotateFreeDialog(hwnd);
                 else if (wasRz)  DoOpenResizeDialog(hwnd);
                 else if (wasCr)  DoOpenCropDialog(hwnd);
@@ -3358,11 +3384,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         // Edit toolbar butonlarında çift tıklamayı engelle — hızlı ardışık döndürme desteği
         if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
         {
-            D2D1_RECT_F rL  = g_renderer->GetEditBtnRotLRect();
-            D2D1_RECT_F rR  = g_renderer->GetEditBtnRotRRect();
-            D2D1_RECT_F rFr = g_renderer->GetEditBtnRotFreeRect();
-            D2D1_RECT_F rRz = g_renderer->GetEditBtnResizeRect();
-            D2D1_RECT_F rCr = g_renderer->GetEditBtnCropRect();
+            D2D1_RECT_F rL    = g_renderer->GetEditBtnRotLRect();
+            D2D1_RECT_F rR    = g_renderer->GetEditBtnRotRRect();
+            D2D1_RECT_F rMore = g_renderer->GetEditBtnMoreRect();
+            D2D1_RECT_F rFr   = g_renderer->GetEditBtnRotFreeRect();
+            D2D1_RECT_F rRz   = g_renderer->GetEditBtnResizeRect();
+            D2D1_RECT_F rCr   = g_renderer->GetEditBtnCropRect();
             if ((cx >= rL.left && cx <= rL.right && cy >= rL.top && cy <= rL.bottom) ||
                 (cx >= rR.left && cx <= rR.right && cy >= rR.top && cy <= rR.bottom))
             {
@@ -3373,10 +3400,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     DoRotateCW(hwnd);
                 return 0;
             }
-            // RotFree/Resize/Crop: çift tıklamayı normal tıklama olarak ilet
-            if ((cx >= rFr.left && cx <= rFr.right && cy >= rFr.top && cy <= rFr.bottom) ||
-                (cx >= rRz.left && cx <= rRz.right && cy >= rRz.top && cy <= rRz.bottom) ||
-                (cx >= rCr.left && cx <= rCr.right && cy >= rCr.top && cy <= rCr.bottom))
+            // More/RotFree/Resize/Crop: çift tıklamayı normal tıklama olarak ilet
+            if ((cx >= rMore.left && cx <= rMore.right && cy >= rMore.top && cy <= rMore.bottom) ||
+                (cx >= rFr.left   && cx <= rFr.right   && cy >= rFr.top   && cy <= rFr.bottom)   ||
+                (cx >= rRz.left   && cx <= rRz.right   && cy >= rRz.top   && cy <= rRz.bottom)   ||
+                (cx >= rCr.left   && cx <= rCr.right   && cy >= rCr.top   && cy <= rCr.bottom))
                 return SendMessage(hwnd, WM_LBUTTONDOWN, wParam, lParam);
         }
 
@@ -3849,6 +3877,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
             InvalidateRect(hwnd, nullptr, FALSE);
         }
+        else if (wParam == kEditMoreFadeTimerID)
+        {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            float dt = min(static_cast<float>(now.QuadPart - g_editMoreFadeLastTime.QuadPart)
+                           / static_cast<float>(g_qpcFreq.QuadPart), 0.1f);
+            g_editMoreFadeLastTime = now;
+            float lerp   = 1.0f - expf(-dt * kEditMoreFadeSpeed);
+            float target = g_viewState.editMoreExpanded ? 1.0f : 0.0f;
+            g_viewState.editMoreAlpha += (target - g_viewState.editMoreAlpha) * lerp;
+            bool done = g_viewState.editMoreExpanded
+                        ? (g_viewState.editMoreAlpha >= 0.99f)
+                        : (g_viewState.editMoreAlpha <= 0.01f);
+            if (done)
+            {
+                g_viewState.editMoreAlpha = target;
+                KillTimer(hwnd, kEditMoreFadeTimerID);
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
         else if (wParam == kDirChangeTimerID)
         {
             KillTimer(hwnd, kDirChangeTimerID);
@@ -4107,6 +4155,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         KillTimer(hwnd, kTooltipFadeTimerID);
         KillTimer(hwnd, kDialogFadeTimerID);
         KillTimer(hwnd, kSaveBarFadeTimerID);
+        KillTimer(hwnd, kEditMoreFadeTimerID);
         KillTimer(hwnd, kDirChangeTimerID);
         StopLocationPrefetchThread();
         SaveLocationCache();

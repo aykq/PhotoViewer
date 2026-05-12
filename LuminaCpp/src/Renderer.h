@@ -129,8 +129,11 @@ struct ViewState
     bool  editBtnRotRPressed    = false;  // ↻ (CW)  butonu basılı
     bool  editBtnRotFreePressed = false;  // serbest döndür butonu basılı
     bool  editBtnResizePressed  = false;  // Resize butonu basılı (press highlight)
-    int   editToolbarHoverBtn   = 0;      // 0=yok, 1=CCW, 2=CW, 3=Free, 4=Resize, 5=Kırp
+    int   editToolbarHoverBtn   = 0;      // 0=yok, 1=CCW, 2=CW, 3=Araçlar, 4=Free, 5=Resize, 6=Kırp
     float editToolbarTooltipAlpha = 0.0f; // tooltip fade-in opaklığı (0=gizli, 1=tam)
+    bool  editBtnMorePressed   = false;  // ··· araçlar butonu basılı
+    bool  editMoreExpanded     = false;  // araçlar paneli açık mı
+    float editMoreAlpha        = 0.0f;   // genişleme animasyon değeri (0=kapalı, 1=açık)
 
     // Serbest döndürme dialog
     bool  showRotateFreeDialog  = false;
@@ -241,9 +244,10 @@ public:
     int  AdvanceFrame();               // bir sonraki frame'e geç, yeni frame süresi (ms) döner
     int  GetCurrentFrameDuration() const;
 
-    // Edit toolbar — düzenleme butonları (Döndür CCW / CW)
+    // Edit toolbar — düzenleme butonları
     D2D1_RECT_F GetEditBtnRotLRect()   const { return m_editBtnRotLRect; }
     D2D1_RECT_F GetEditBtnRotRRect()   const { return m_editBtnRotRRect; }
+    D2D1_RECT_F GetEditBtnMoreRect()   const { return m_editBtnMoreRect; }
     bool        IsEditToolbarVisible() const { return m_editToolbarVisible; }
 
     // Save bar — kayıt seçenekleri (Kaydet / Kaydetme / Ayrı Kaydet)
@@ -416,6 +420,7 @@ private:
     // Edit toolbar (döndür + resize butonları) — her Render'da güncellenir
     D2D1_RECT_F m_editBtnRotLRect    = {};
     D2D1_RECT_F m_editBtnRotRRect    = {};
+    D2D1_RECT_F m_editBtnMoreRect    = {};
     D2D1_RECT_F m_editBtnResizeRect  = {};
     D2D1_RECT_F m_editBtnCropRect    = {};
     bool        m_editToolbarVisible = false;
