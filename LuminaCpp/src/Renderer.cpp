@@ -149,6 +149,8 @@ HRESULT Renderer::CreateDeviceResources()
     m_renderTarget->CreateSolidColorBrush(
         D2D1::ColorF(0.776f, 0.157f, 0.157f, 1.0f), &m_deleteBrush    // #C62828 — Sil tehlike
     );
+    if (!m_dialogLayer)
+        m_renderTarget->CreateLayer(nullptr, &m_dialogLayer);
     return S_OK;
 }
 
@@ -168,6 +170,7 @@ void Renderer::DiscardDeviceResources()
     for (auto& [key, bmp] : m_mapTileCache) if (bmp) bmp->Release();
     m_mapTileCache.clear();
 
+    if (m_dialogLayer)      { m_dialogLayer->Release();      m_dialogLayer = nullptr; }
     if (m_bitmap)           { m_bitmap->Release();           m_bitmap = nullptr; }
     if (m_deleteBrush)      { m_deleteBrush->Release();      m_deleteBrush = nullptr; }
     if (m_saveBtnBrush)     { m_saveBtnBrush->Release();     m_saveBtnBrush = nullptr; }
@@ -216,6 +219,7 @@ void Renderer::ClearAnimation()
     m_animDurations.clear();
     m_animFrameIdx = 0;
 }
+
 
 int Renderer::AdvanceFrame()
 {
@@ -1269,6 +1273,14 @@ void Renderer::DrawSaveBar(const ViewState& vs)
 
     m_saveBarVisible = true;
 
+    bool slayer = (vs.saveBarAlpha < 0.99f) && m_dialogLayer;
+    if (slayer)
+    {
+        D2D1_LAYER_PARAMETERS lp = D2D1::LayerParameters();
+        lp.opacity = vs.saveBarAlpha;
+        m_renderTarget->PushLayer(lp, m_dialogLayer);
+    }
+
     D2D1_SIZE_F sz = m_renderTarget->GetSize();
     float availW   = sz.width - vs.panelAnimWidth;
 
@@ -1330,6 +1342,9 @@ void Renderer::DrawSaveBar(const ViewState& vs)
     DrawBtn(m_saveBtnBrush,    L"Kaydet",       m_saveBarSaveRect);
     DrawBtn(m_separatorBrush,  L"Kaydetme",     m_saveBarDiscardRect);
     DrawBtn(m_overlayBrush,    L"Ayr\u0131 Kaydet",  m_saveBarSaveAsRect);
+
+    if (slayer)
+        m_renderTarget->PopLayer();
 }
 
 // ─── Silme Onay / Uyarı Dialogu ──────────────────────────────────────────────
@@ -1342,6 +1357,14 @@ void Renderer::DrawDeleteConfirmDialog(const ViewState& vs, const ImageInfo* inf
      || !m_deleteBrush  || !m_overlayBrush   || !m_btnFormat  || !m_labelFormat) return;
 
     m_dlgVisible = true;
+
+    bool dlayer = (vs.dialogAlpha < 0.99f) && m_dialogLayer;
+    if (dlayer)
+    {
+        D2D1_LAYER_PARAMETERS lp = D2D1::LayerParameters();
+        lp.opacity = vs.dialogAlpha;
+        m_renderTarget->PushLayer(lp, m_dialogLayer);
+    }
 
     D2D1_SIZE_F sz = m_renderTarget->GetSize();
 
@@ -1450,6 +1473,9 @@ void Renderer::DrawDeleteConfirmDialog(const ViewState& vs, const ImageInfo* inf
         DrawDlgBtn(m_dlgCancelRect, btn1L, btn1R, m_separatorBrush, L"İptal", 1);
         DrawDlgBtn(m_dlgDeleteRect, btn2L, btn2R, m_deleteBrush,    L"Sil",      2);
     }
+
+    if (dlayer)
+        m_renderTarget->PopLayer();
 }
 
 // ─── Yeniden Boyutlandır Dialogu ─────────────────────────────────────────────
@@ -1465,6 +1491,14 @@ void Renderer::DrawResizeDialog(const ViewState& vs)
      || !m_activeBrush   || !m_saveBtnBrush) return;
 
     m_resizeDlgVisible = true;
+
+    bool dlayer = (vs.dialogAlpha < 0.99f) && m_dialogLayer;
+    if (dlayer)
+    {
+        D2D1_LAYER_PARAMETERS lp = D2D1::LayerParameters();
+        lp.opacity = vs.dialogAlpha;
+        m_renderTarget->PushLayer(lp, m_dialogLayer);
+    }
 
     D2D1_SIZE_F sz = m_renderTarget->GetSize();
 
@@ -1677,6 +1711,9 @@ void Renderer::DrawResizeDialog(const ViewState& vs)
 
     DrawMainBtn(m_resizeDlgCancelRect, btn1L, btn1R, m_separatorBrush, L"İptal",  1);
     DrawMainBtn(m_resizeDlgApplyRect,  btn2L, btn2R, m_saveBtnBrush,   L"Uygula", 2);
+
+    if (dlayer)
+        m_renderTarget->PopLayer();
 }
 
 // ─── Serbest Döndürme Dialogu ────────────────────────────────────────────────
@@ -1692,6 +1729,14 @@ void Renderer::DrawRotateFreeDialog(const ViewState& vs)
      || !m_activeBrush   || !m_saveBtnBrush) return;
 
     m_rotFreeDlgVisible = true;
+
+    bool dlayer = (vs.dialogAlpha < 0.99f) && m_dialogLayer;
+    if (dlayer)
+    {
+        D2D1_LAYER_PARAMETERS lp = D2D1::LayerParameters();
+        lp.opacity = vs.dialogAlpha;
+        m_renderTarget->PushLayer(lp, m_dialogLayer);
+    }
 
     D2D1_SIZE_F sz = m_renderTarget->GetSize();
 
@@ -1856,6 +1901,9 @@ void Renderer::DrawRotateFreeDialog(const ViewState& vs)
     DrawMainBtn(m_rotFreeDlgResetRect,  btn1L, m_separatorBrush, L"Sıfırla", 5);
     DrawMainBtn(m_rotFreeDlgCancelRect, btn2L, m_separatorBrush, L"İptal",   6);
     DrawMainBtn(m_rotFreeDlgApplyRect,  btn3L, m_saveBtnBrush,   L"Uygula",  7);
+
+    if (dlayer)
+        m_renderTarget->PopLayer();
 }
 
 // ─── Kırpma Dialogu ───────────────────────────────────────────────────────────
@@ -1870,6 +1918,14 @@ void Renderer::DrawCropDialog(const ViewState& vs)
     if (m_imageDisplayRect.right <= m_imageDisplayRect.left) return;
 
     m_cropDlgVisible = true;
+
+    bool dlayer = (vs.dialogAlpha < 0.99f) && m_dialogLayer;
+    if (dlayer)
+    {
+        D2D1_LAYER_PARAMETERS lp = D2D1::LayerParameters();
+        lp.opacity = vs.dialogAlpha;
+        m_renderTarget->PushLayer(lp, m_dialogLayer);
+    }
 
     const float imgX0 = m_imageDisplayRect.left;
     const float imgY0 = m_imageDisplayRect.top;
@@ -2047,6 +2103,9 @@ void Renderer::DrawCropDialog(const ViewState& vs)
         }
         m_renderTarget->DrawText(L"Uygula", 6, m_btnFormat, m_cropDlgApplyRect, m_whiteBrush);
     }
+
+    if (dlayer)
+        m_renderTarget->PopLayer();
 }
 
 void Renderer::Resize(UINT width, UINT height)

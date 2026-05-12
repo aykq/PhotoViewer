@@ -170,6 +170,10 @@ struct ViewState
     int   cropDlgHoverBtn    = 0;     // 0=yok, 1-5=oran, 6=iptal, 7=uygula
     int   cropDlgPressedBtn  = 0;
     bool  editBtnCropPressed = false;
+
+    // Animasyon geçiş durumları
+    float dialogAlpha      = 1.0f;  // modal dialog fade-in (0=gizli, 1=tam görünür)
+    float saveBarAlpha     = 0.0f;  // save bar fade-in (0=gizli, 1=tam görünür)
 };
 
 // Renderer: Direct2D render target yönetimi + WIC görüntü yükleme
@@ -458,6 +462,9 @@ private:
 
     // Son render'daki görüntü ekran rect'i — kırpma koordinat dönüşümü için
     D2D1_RECT_F m_imageDisplayRect = {};
+
+    // Dialog ve save bar fade için paylaşılan D2D1 layer
+    ID2D1Layer*   m_dialogLayer     = nullptr;
 
     // Silme onay dialogu buton rect'leri — her Render'da güncellenir
     D2D1_RECT_F m_dlgCancelRect = {};

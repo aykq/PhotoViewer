@@ -52,6 +52,8 @@ static constexpr UINT_PTR kEditToolbarFadeTimerID = 11; // edit toolbar alpha an
 static constexpr UINT_PTR kDirChangeTimerID       = 12; // dizin değişikliği debounce (200ms)
 static constexpr UINT_PTR kTooltipDelayTimerID    = 13; // 500ms hover bekle → tooltip başlat
 static constexpr UINT_PTR kTooltipFadeTimerID     = 14; // tooltip fade-in animasyonu
+static constexpr UINT_PTR kDialogFadeTimerID      = 16; // modal dialog fade-in
+static constexpr UINT_PTR kSaveBarFadeTimerID     = 17; // save bar fade-in
 
 // Animasyon timer aralığı — 7ms ≈ 143fps (timeBeginPeriod(1) ile hassas çalışır)
 static constexpr UINT     kAnimIntervalMs       = 7;
@@ -61,6 +63,8 @@ static constexpr UINT     kAnimIntervalMs       = 7;
 static constexpr float    kPanelAnimSpeed       = 25.0f;
 static constexpr float    kZoomAnimSpeed        = 30.0f;
 static constexpr float    kStripAnimSpeed       = 25.0f;
+static constexpr float    kDialogFadeSpeed      = 30.0f;  // ~150ms 0→1
+static constexpr float    kSaveBarFadeSpeed     = 22.0f;  // ~210ms 0→1
 
 // QPC frekansı ve son-tick zamanları — delta-time hesabı için
 static LARGE_INTEGER      g_qpcFreq             = {};
@@ -71,6 +75,8 @@ static LARGE_INTEGER      g_indexFadeLastTime   = {};
 static LARGE_INTEGER      g_zoomFadeLastTime           = {};
 static LARGE_INTEGER      g_editToolbarFadeLastTime    = {};
 static LARGE_INTEGER      g_tooltipFadeLastTime        = {};
+static LARGE_INTEGER      g_dialogFadeLastTime         = {};
+static LARGE_INTEGER      g_saveBarFadeLastTime        = {};
 
 // --- Arka plan decode ---
 
@@ -790,6 +796,7 @@ static void ApplyDecodeResult(HWND hwnd, DecodeResult* result)
     g_edit.format   = result->info.format;
     g_edit.isDirty  = false;
     g_viewState.editDirty = false;
+    g_viewState.saveBarAlpha = 0.0f;
 
     ResetIndexIdleTimer(hwnd);
     InvalidateRect(hwnd, nullptr, FALSE);
@@ -1229,6 +1236,8 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
 {
     KillTimer(hwnd, kAnimTimerID);
     KillTimer(hwnd, kZoomAnimTimerID);
+    KillTimer(hwnd, kDialogFadeTimerID);
+    KillTimer(hwnd, kSaveBarFadeTimerID);
     if (g_renderer) g_renderer->ClearAnimation();
     UpdateWindowTitle(hwnd, path);
     ++g_thumbCancel;  // Eski thumbnail decode thread'lerini iptal et
@@ -1578,6 +1587,7 @@ static void DoRotateCW(HWND hwnd)
     if (g_isSaving.load()) return;  // kayıt devam ederken döndürme engellenir
     RotatePixels90CW(g_edit.pixels, g_edit.width, g_edit.height);
     g_edit.isDirty         = true;
+    if (!g_viewState.editDirty) { g_viewState.saveBarAlpha = 0.0f; QueryPerformanceCounter(&g_saveBarFadeLastTime); KillTimer(hwnd, kSaveBarFadeTimerID); SetTimer(hwnd, kSaveBarFadeTimerID, kAnimIntervalMs, nullptr); }
     g_viewState.editDirty  = true;
     g_viewState.editToolbarAlpha = 1.0f;
     KillTimer(hwnd, kEditToolbarFadeTimerID);
@@ -1592,6 +1602,7 @@ static void DoRotateCCW(HWND hwnd)
     if (g_isSaving.load()) return;  // kayıt devam ederken döndürme engellenir
     RotatePixels90CCW(g_edit.pixels, g_edit.width, g_edit.height);
     g_edit.isDirty         = true;
+    if (!g_viewState.editDirty) { g_viewState.saveBarAlpha = 0.0f; QueryPerformanceCounter(&g_saveBarFadeLastTime); KillTimer(hwnd, kSaveBarFadeTimerID); SetTimer(hwnd, kSaveBarFadeTimerID, kAnimIntervalMs, nullptr); }
     g_viewState.editDirty  = true;
     g_viewState.editToolbarAlpha = 1.0f;
     KillTimer(hwnd, kEditToolbarFadeTimerID);
@@ -1673,6 +1684,10 @@ static void DoOpenCropDialog(HWND hwnd)
     g_viewState.cropDlgHoverBtn   = 0;
     g_viewState.cropDlgPressedBtn = 0;
     g_viewState.showCropDialog    = true;
+    g_viewState.dialogAlpha = 0.0f;
+    QueryPerformanceCounter(&g_dialogFadeLastTime);
+    KillTimer(hwnd, kDialogFadeTimerID);
+    SetTimer(hwnd, kDialogFadeTimerID, kAnimIntervalMs, nullptr);
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -1702,6 +1717,7 @@ static void DoApplyCrop(HWND hwnd)
 
     CropPixelsRect(g_edit.pixels, g_edit.width, g_edit.height, x0, y0, x1, y1);
     g_edit.isDirty        = true;
+    if (!g_viewState.editDirty) { g_viewState.saveBarAlpha = 0.0f; QueryPerformanceCounter(&g_saveBarFadeLastTime); KillTimer(hwnd, kSaveBarFadeTimerID); SetTimer(hwnd, kSaveBarFadeTimerID, kAnimIntervalMs, nullptr); }
     g_viewState.editDirty = true;
     g_viewState.editToolbarAlpha = 1.0f;
     KillTimer(hwnd, kEditToolbarFadeTimerID);
@@ -1841,6 +1857,10 @@ static void DoOpenRotateFreeDialog(HWND hwnd)
     g_viewState.rotateFreeDlgHoverBtn  = 0;
     g_viewState.rotateFreeDlgPressBtn  = 0;
     g_viewState.showRotateFreeDialog   = true;
+    g_viewState.dialogAlpha = 0.0f;
+    QueryPerformanceCounter(&g_dialogFadeLastTime);
+    KillTimer(hwnd, kDialogFadeTimerID);
+    SetTimer(hwnd, kDialogFadeTimerID, kAnimIntervalMs, nullptr);
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -1877,6 +1897,7 @@ static void DoApplyRotateFree(HWND hwnd)
     }
 
     g_edit.isDirty        = true;
+    if (!g_viewState.editDirty) { g_viewState.saveBarAlpha = 0.0f; QueryPerformanceCounter(&g_saveBarFadeLastTime); KillTimer(hwnd, kSaveBarFadeTimerID); SetTimer(hwnd, kSaveBarFadeTimerID, kAnimIntervalMs, nullptr); }
     g_viewState.editDirty = true;
     g_viewState.editToolbarAlpha = 1.0f;
     KillTimer(hwnd, kEditToolbarFadeTimerID);
@@ -1939,6 +1960,10 @@ static void DoOpenResizeDialog(HWND hwnd)
     g_viewState.resizeDlgHoverBtn   = 0;
     g_viewState.resizeDlgPressedBtn = 0;
     g_viewState.showResizeDialog    = true;
+    g_viewState.dialogAlpha = 0.0f;
+    QueryPerformanceCounter(&g_dialogFadeLastTime);
+    KillTimer(hwnd, kDialogFadeTimerID);
+    SetTimer(hwnd, kDialogFadeTimerID, kAnimIntervalMs, nullptr);
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -1949,6 +1974,7 @@ static void DoResizeConfirmed(HWND hwnd)
     UINT th = static_cast<UINT>(max(1, g_viewState.resizeH));
     ResizePixels(g_edit.pixels, g_edit.width, g_edit.height, tw, th);
     g_edit.isDirty        = true;
+    if (!g_viewState.editDirty) { g_viewState.saveBarAlpha = 0.0f; QueryPerformanceCounter(&g_saveBarFadeLastTime); KillTimer(hwnd, kSaveBarFadeTimerID); SetTimer(hwnd, kSaveBarFadeTimerID, kAnimIntervalMs, nullptr); }
     g_viewState.editDirty = true;
     g_viewState.editToolbarAlpha = 1.0f;
     KillTimer(hwnd, kEditToolbarFadeTimerID);
@@ -2049,6 +2075,10 @@ static void DoDelete(HWND hwnd)
     if (g_edit.isDirty)
     {
         g_viewState.showUnsavedWarningDialog = true;
+        g_viewState.dialogAlpha = 0.0f;
+        QueryPerformanceCounter(&g_dialogFadeLastTime);
+        KillTimer(hwnd, kDialogFadeTimerID);
+        SetTimer(hwnd, kDialogFadeTimerID, kAnimIntervalMs, nullptr);
         InvalidateRect(hwnd, nullptr, FALSE);
         return;
     }
@@ -2056,6 +2086,10 @@ static void DoDelete(HWND hwnd)
     g_viewState.showDeleteConfirmDialog = true;
     g_viewState.deleteDlgHoverBtn       = 0;
     g_viewState.deleteDlgPressedBtn     = 0;
+    g_viewState.dialogAlpha = 0.0f;
+    QueryPerformanceCounter(&g_dialogFadeLastTime);
+    KillTimer(hwnd, kDialogFadeTimerID);
+    SetTimer(hwnd, kDialogFadeTimerID, kAnimIntervalMs, nullptr);
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -2064,6 +2098,8 @@ static void DoDiscard(HWND hwnd)
     if (!g_edit.isDirty) return;
     g_edit.isDirty         = false;
     g_viewState.editDirty  = false;
+    g_viewState.saveBarAlpha = 0.0f;
+    KillTimer(hwnd, kSaveBarFadeTimerID);
     g_viewState.editToolbarAlpha = 1.0f;
     KillTimer(hwnd, kEditToolbarFadeTimerID);
     KillTimer(hwnd, kEditToolbarIdleTimerID);
@@ -3781,6 +3817,38 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
             InvalidateRect(hwnd, nullptr, FALSE);
         }
+        else if (wParam == kDialogFadeTimerID)
+        {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            float dt = min(static_cast<float>(now.QuadPart - g_dialogFadeLastTime.QuadPart)
+                           / static_cast<float>(g_qpcFreq.QuadPart), 0.1f);
+            g_dialogFadeLastTime = now;
+            float lerp = 1.0f - expf(-dt * kDialogFadeSpeed);
+            g_viewState.dialogAlpha += (1.0f - g_viewState.dialogAlpha) * lerp;
+            if (g_viewState.dialogAlpha >= 0.99f)
+            {
+                g_viewState.dialogAlpha = 1.0f;
+                KillTimer(hwnd, kDialogFadeTimerID);
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        else if (wParam == kSaveBarFadeTimerID)
+        {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            float dt = min(static_cast<float>(now.QuadPart - g_saveBarFadeLastTime.QuadPart)
+                           / static_cast<float>(g_qpcFreq.QuadPart), 0.1f);
+            g_saveBarFadeLastTime = now;
+            float lerp = 1.0f - expf(-dt * kSaveBarFadeSpeed);
+            g_viewState.saveBarAlpha += (1.0f - g_viewState.saveBarAlpha) * lerp;
+            if (g_viewState.saveBarAlpha >= 0.99f)
+            {
+                g_viewState.saveBarAlpha = 1.0f;
+                KillTimer(hwnd, kSaveBarFadeTimerID);
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
         else if (wParam == kDirChangeTimerID)
         {
             KillTimer(hwnd, kDirChangeTimerID);
@@ -3840,6 +3908,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
             g_edit.isDirty        = false;
             g_viewState.editDirty = false;
+            g_viewState.saveBarAlpha = 0.0f;
+            KillTimer(hwnd, kSaveBarFadeTimerID);
             g_viewState.editToolbarAlpha = 1.0f;
             KillTimer(hwnd, kEditToolbarFadeTimerID);
             KillTimer(hwnd, kEditToolbarIdleTimerID);
@@ -4035,6 +4105,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         KillTimer(hwnd, kEditToolbarFadeTimerID);
         KillTimer(hwnd, kTooltipDelayTimerID);
         KillTimer(hwnd, kTooltipFadeTimerID);
+        KillTimer(hwnd, kDialogFadeTimerID);
+        KillTimer(hwnd, kSaveBarFadeTimerID);
         KillTimer(hwnd, kDirChangeTimerID);
         StopLocationPrefetchThread();
         SaveLocationCache();
