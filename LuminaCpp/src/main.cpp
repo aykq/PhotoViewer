@@ -3313,14 +3313,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float cx = static_cast<float>(GET_X_LPARAM(lParam));
         float cy = static_cast<float>(GET_Y_LPARAM(lParam));
 
-        // Yeniden boyutlandır / serbest döndürme / kırpma dialogu açıkken çift tıklama ile zoom yapma
-        if (g_viewState.showResizeDialog || g_viewState.showRotateFreeDialog || g_viewState.showCropDialog) return 0;
+        // Herhangi bir modal dialog açıksa çift tıklamayı normal tıklama olarak ilet
+        if (g_viewState.showResizeDialog || g_viewState.showRotateFreeDialog ||
+            g_viewState.showCropDialog   || g_viewState.showDeleteConfirmDialog ||
+            g_viewState.showUnsavedWarningDialog)
+            return SendMessage(hwnd, WM_LBUTTONDOWN, wParam, lParam);
 
         // Edit toolbar butonlarında çift tıklamayı engelle — hızlı ardışık döndürme desteği
         if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
         {
-            D2D1_RECT_F rL = g_renderer->GetEditBtnRotLRect();
-            D2D1_RECT_F rR = g_renderer->GetEditBtnRotRRect();
+            D2D1_RECT_F rL  = g_renderer->GetEditBtnRotLRect();
+            D2D1_RECT_F rR  = g_renderer->GetEditBtnRotRRect();
+            D2D1_RECT_F rFr = g_renderer->GetEditBtnRotFreeRect();
+            D2D1_RECT_F rRz = g_renderer->GetEditBtnResizeRect();
+            D2D1_RECT_F rCr = g_renderer->GetEditBtnCropRect();
             if ((cx >= rL.left && cx <= rL.right && cy >= rL.top && cy <= rL.bottom) ||
                 (cx >= rR.left && cx <= rR.right && cy >= rR.top && cy <= rR.bottom))
             {
@@ -3331,9 +3337,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     DoRotateCW(hwnd);
                 return 0;
             }
+            // RotFree/Resize/Crop: çift tıklamayı normal tıklama olarak ilet
+            if ((cx >= rFr.left && cx <= rFr.right && cy >= rFr.top && cy <= rFr.bottom) ||
+                (cx >= rRz.left && cx <= rRz.right && cy >= rRz.top && cy <= rRz.bottom) ||
+                (cx >= rCr.left && cx <= rCr.right && cy >= rCr.top && cy <= rCr.bottom))
+                return SendMessage(hwnd, WM_LBUTTONDOWN, wParam, lParam);
         }
 
-        // Save bar butonlarında çift tıklamayı engelle
+        // Save bar butonlarında çift tıklamayı normal tıklama olarak ilet
         if (g_renderer && g_renderer->IsSaveBarVisible() && g_viewState.editDirty)
         {
             D2D1_RECT_F rSave    = g_renderer->GetSaveBarSaveRect();
@@ -3342,7 +3353,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if ((cx >= rSave.left    && cx <= rSave.right    && cy >= rSave.top    && cy <= rSave.bottom)    ||
                 (cx >= rDiscard.left && cx <= rDiscard.right && cy >= rDiscard.top && cy <= rDiscard.bottom) ||
                 (cx >= rSaveAs.left  && cx <= rSaveAs.right  && cy >= rSaveAs.top  && cy <= rSaveAs.bottom))
-                return 0;
+                return SendMessage(hwnd, WM_LBUTTONDOWN, wParam, lParam);
         }
 
         // Ok zone'da çift tıklamayı engelle — navigasyon zaten birinci LBUTTONUP'ta gerçekleşti
