@@ -1,3 +1,4 @@
+using ImageMagick;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media.Imaging;
 using PhotoViewer.Views;
@@ -25,6 +26,10 @@ namespace PhotoViewer
         public App()
         {
             this.InitializeComponent();
+            MagickNET.SetResourceLimit(ResourceType.Memory, 512UL * 1024 * 1024); // 512 MB
+            MagickNET.SetResourceLimit(ResourceType.Width, 16384);
+            MagickNET.SetResourceLimit(ResourceType.Height, 16384);
+            MagickNET.SetResourceLimit(ResourceType.Area, 16384UL * 16384);
         }
 
         protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)

@@ -160,6 +160,10 @@ namespace PhotoViewer.Services
 
             try
             {
+                var info = new MagickImageInfo(filePath);
+                if (info.Width > 16384 || info.Height > 16384)
+                    return (null, 0, 0);
+
                 var readSettings = CreateMagickReadSettings(filePath);
                 using var image = new MagickImage(filePath, readSettings);
                 image.AutoOrient();
