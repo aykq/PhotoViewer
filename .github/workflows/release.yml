@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build-and-release:
@@ -81,6 +83,22 @@ jobs:
                   "installer\PORTABLE_README.txt" `
             -DestinationPath "installer\output\Lumina-$ver-x64-Portable.zip"
 
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem "installer\output\Lumina-*" | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$hash  $($_.Name)" | Add-Content "installer\output\SHA256SUMS.txt"
+          }
+
+      - name: Attest artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            installer/output/Lumina-*-x64-Setup.exe
+            installer/output/Lumina-*-x64.msi
+            installer/output/Lumina-*-x64-Portable.zip
+
       - name: Extract release notes from tag
         id: relnotes
         shell: bash
@@ -102,3 +120,4 @@ jobs:
             installer/output/Lumina-*-x64-Setup.exe
             installer/output/Lumina-*-x64.msi
             installer/output/Lumina-*-x64-Portable.zip
+            installer/output/SHA256SUMS.txt
