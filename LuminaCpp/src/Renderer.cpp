@@ -715,7 +715,7 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
                 // Onay istenmemiş — kullanıcıdan izin al
                 constexpr float kPromptH = 38.0f;
                 const wchar_t* kPromptText =
-                    L"Konum adı için GPS koordinatları photon.komoot.io adresine gönderilecek.";
+                    L"Konum adı için GPS koordinatları photon.komoot.io ve tile.openstreetmap.org adreslerine gönderilecek.";
                 m_renderTarget->DrawText(
                     kPromptText, static_cast<UINT32>(wcslen(kPromptText)),
                     m_labelFormat,

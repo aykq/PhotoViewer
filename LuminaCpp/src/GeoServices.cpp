@@ -164,9 +164,9 @@ std::vector<uint8_t> FetchOsmTile(int zoom, int x, int y)
     wchar_t reqPath[80];
     swprintf_s(reqPath, L"/%d/%d/%d.png", zoom, x, y);
 
-    // CartoDB CDN bazı tarayıcı dışı UA'ları reddediyor; genel UA kullan
+    // tile.openstreetmap.org kullanım politikası geçerli bir uygulama UA'sı gerektirir.
     HINTERNET hSession = WinHttpOpen(
-        L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Lumina/2.0",
+        L"Lumina/1.1 (https://github.com/AykQ/Lumina)",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return {};
 
