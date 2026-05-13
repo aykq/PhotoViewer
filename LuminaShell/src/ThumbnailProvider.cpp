@@ -229,8 +229,9 @@ HRESULT DllRegisterServer()
 
     RegWriteStr(hRoot, clsidBase, nullptr, k_desc);
     RegWriteStr(hRoot, inproc,    nullptr, dllPath);
-    RegWriteStr(hRoot, inproc,    L"ThreadingModel", L"Both");
-    // Windows 11: bu DWORD olmadan Explorer thumbnail handler'ı hiç çağırmaz
+    RegWriteStr(hRoot, inproc,    L"ThreadingModel", L"Apartment");
+    // Windows 11'de izolasyon modunda IThumbnailProvider→HBITMAP cross-process
+    // marshal edilemiyor; handler hiç çağrılmıyor. FIND-008 kabul edilmiş risk.
     RegWriteDword(hRoot, clsidBase, L"DisableProcessIsolation", 1);
 
     // Shell Extensions Approved (her ikisine de yaz)
@@ -278,7 +279,6 @@ HRESULT DllUnregisterServer()
 
     for (HKEY hRoot : { HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE })
     {
-        // DisableProcessIsolation value'su önce silinmeli, sonra key silinebilir
         HKEY hClsid;
         if (RegOpenKeyExW(hRoot, clsidBase, 0, KEY_SET_VALUE, &hClsid) == ERROR_SUCCESS)
         {

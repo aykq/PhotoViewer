@@ -1526,12 +1526,12 @@ bool ExtractHEICEmbeddedPreview(const std::wstring& path,
                                  std::vector<uint8_t>& pixelsOut,
                                  UINT& widthOut, UINT& heightOut)
 {
-    auto data = ReadFileBytes(path);
-    if (data.empty()) return false;
+    char pathUtf8[MAX_PATH * 4]{};
+    WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1,
+                        pathUtf8, static_cast<int>(sizeof(pathUtf8)), nullptr, nullptr);
 
     heif_context* ctx = heif_context_alloc();
-    heif_error err = heif_context_read_from_memory_without_copy(
-        ctx, data.data(), data.size(), nullptr);
+    heif_error err = heif_context_read_from_file(ctx, pathUtf8, nullptr);
     if (err.code != heif_error_Ok) { heif_context_free(ctx); return false; }
 
     heif_image_handle* handle = nullptr;
