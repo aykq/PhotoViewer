@@ -218,16 +218,14 @@ HRESULT DllRegisterServer()
     wchar_t dllPath[MAX_PATH];
     GetModuleFileNameW(g_hModule, dllPath, MAX_PATH);
 
-    // CLSID + InprocServer32: HKLM tercih, yoksa HKCU
     wchar_t clsidBase[128], inproc[160];
     swprintf_s(clsidBase, L"SOFTWARE\\Classes\\CLSID\\%s",                k_clsid);
     swprintf_s(inproc,    L"SOFTWARE\\Classes\\CLSID\\%s\\InprocServer32", k_clsid);
 
     HKEY hRoot = HKEY_LOCAL_MACHINE;
     if (RegWriteStr(hRoot, clsidBase, nullptr, k_desc) != S_OK)
-        hRoot = HKEY_CURRENT_USER;  // admin yoksa HKCU'ya düş
+        return SELFREG_E_CLASS;
 
-    RegWriteStr(hRoot, clsidBase, nullptr, k_desc);
     RegWriteStr(hRoot, inproc,    nullptr, dllPath);
     RegWriteStr(hRoot, inproc,    L"ThreadingModel", L"Apartment");
     // Windows 11'de izolasyon modunda IThumbnailProvider→HBITMAP cross-process

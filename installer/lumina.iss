@@ -2,12 +2,13 @@
   #define AppVersion "1.0.0"
 #endif
 
-#define AppName        "Lumina"
-#define AppPublisher   "Lumina"
-#define AppURL         "https://github.com/aykq/Lumina"
-#define AppExeName     "LuminaCpp.exe"
-#define AppDllName     "LuminaShell.dll"
-#define AppId          "{{4B8E9F2D-1A3C-4D6E-8F9A-1B2C3D4E5F6A}"
+#define AppName           "Lumina"
+#define AppPublisher      "Lumina"
+#define AppURL            "https://github.com/aykq/Lumina"
+#define AppExeName        "LuminaCpp.exe"
+#define AppDllName        "LuminaShell.dll"
+#define AppId             "{{4B8E9F2D-1A3C-4D6E-8F9A-1B2C3D4E5F6A}"
+#define ClsidLuminaShell  "3C7F5A2D-4B8E-4F5C-A1B2-3C4D5E6F7A8B"
 
 [Setup]
 AppId={#AppId}
@@ -171,3 +172,10 @@ Root: HKLM; Subkey: "SOFTWARE\Lumina\Capabilities\FileAssociations"; ValueType: 
 Root: HKLM; Subkey: "SOFTWARE\Lumina\Capabilities\FileAssociations"; ValueType: string; ValueName: ".heif"; ValueData: "Lumina.Image.HEIC"; Tasks: assoc\heic
 Root: HKLM; Subkey: "SOFTWARE\Lumina\Capabilities\FileAssociations"; ValueType: string; ValueName: ".avif"; ValueData: "Lumina.Image.AVIF"; Tasks: assoc\avif
 Root: HKLM; Subkey: "SOFTWARE\Lumina\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jxl";  ValueData: "Lumina.Image.JXL";  Tasks: assoc\jxl
+
+; ──────────────────────────────────────────────────────────────────────────────
+; Shell extension CLSID ACLs — prevent standard users from redirecting DLL path
+; Applied after regserver calls DllRegisterServer(), which creates the keys.
+; ──────────────────────────────────────────────────────────────────────────────
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{{#ClsidLuminaShell}}";                    Flags: uninsdeletekey; Permissions: admins-full,system-full,users-readexec
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{{#ClsidLuminaShell}}\InprocServer32";     Permissions: admins-full,system-full,users-readexec
