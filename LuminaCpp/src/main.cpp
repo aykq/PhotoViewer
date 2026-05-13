@@ -977,8 +977,10 @@ static void LoadLocationCache()
     FILE* f = nullptr;
     _wfopen_s(&f, path.c_str(), L"r,ccs=UTF-8");
     if (!f) return;
+    constexpr size_t kMaxCacheEntries = 10000;
+    size_t entryCount = 0;
     wchar_t line[512];
-    while (fgetws(line, 512, f))
+    while (entryCount < kMaxCacheEntries && fgetws(line, 512, f))
     {
         std::wstring l(line);
         while (!l.empty() && (l.back() == L'\n' || l.back() == L'\r')) l.pop_back();
@@ -988,6 +990,7 @@ static void LoadLocationCache()
         std::wstring val = l.substr(tab + 1);
         std::lock_guard<std::mutex> lk(g_locationCacheMutex);
         g_locationCache[key] = val;
+        ++entryCount;
     }
     fclose(f);
 }

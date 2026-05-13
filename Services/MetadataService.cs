@@ -12,7 +12,7 @@ using Windows.Storage;
 
 namespace PhotoViewer.Services
 {
-    public class MetadataService
+    public class MetadataService : IMetadataService
     {
         public async Task<List<ExifData>> GetExifMetadataAsync(string filePath)
         {

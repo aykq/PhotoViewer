@@ -129,11 +129,11 @@ static std::wstring WicQueryStr(IWICMetadataQueryReader* r, const wchar_t* q)
         }
         else if (pv.vt == VT_LPSTR && pv.pszVal)
         {
-            int len = MultiByteToWideChar(CP_ACP, 0, pv.pszVal, -1, nullptr, 0);
+            int len = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, pv.pszVal, -1, nullptr, 0);
             if (len > 1)
             {
                 result.resize(len - 1);
-                MultiByteToWideChar(CP_ACP, 0, pv.pszVal, -1, result.data(), len);
+                MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, pv.pszVal, -1, result.data(), len - 1);
             }
         }
     }

@@ -30,6 +30,17 @@ namespace PhotoViewer
             MagickNET.SetResourceLimit(ResourceType.Width, 16384);
             MagickNET.SetResourceLimit(ResourceType.Height, 16384);
             MagickNET.SetResourceLimit(ResourceType.Area, 16384UL * 16384);
+
+            UnhandledException += (s, e) =>
+            {
+                Debug.WriteLine($"[CRITICAL] Unhandled: {e.Exception}");
+                e.Handled = true;
+            };
+            TaskScheduler.UnobservedTaskException += (s, e) =>
+            {
+                Debug.WriteLine($"[ERROR] Unobserved task: {e.Exception}");
+                e.SetObserved();
+            };
         }
 
         protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
@@ -85,7 +96,9 @@ namespace PhotoViewer
                     var filePath = fileArgs.Files[0].Path;
                     if (_window is MainWindow mainWindow)
                     {
-                        _ = mainWindow.ViewModel.LoadPhotoAsync(filePath);
+                        mainWindow.ViewModel.LoadPhotoAsync(filePath).ContinueWith(
+                            t => Debug.WriteLine($"[ERROR] LoadPhoto failed: {t.Exception}"),
+                            TaskContinuationOptions.OnlyOnFaulted);
                     }
                 }
             }

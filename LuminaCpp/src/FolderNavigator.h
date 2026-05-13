@@ -1,225 +1,32 @@
 #pragma once
 
-#include <windows.h>
-#include <shlwapi.h>   // StrCmpLogicalW — Explorer sıralaması
 #include <string>
 #include <vector>
-#include <algorithm>
-
-#pragma comment(lib, "shlwapi.lib")
 
 // Açık dosyanın bulunduğu klasördeki görüntü dosyalarını yönetir.
 // Önceki/sonraki navigasyon, Explorer-uyumlu sıralama ve döngüsel gezinme sağlar.
 class FolderNavigator
 {
 public:
-    // filePath: başlangıç dosyasının tam yolu.
-    // Yapıcı, aynı klasördeki tüm desteklenen görüntüleri tarar ve sıralar.
-    explicit FolderNavigator(const std::wstring& filePath)
-    {
-        if (filePath.empty()) return;
+    explicit FolderNavigator(const std::wstring& filePath);
 
-        auto pos = filePath.find_last_of(L"\\/");
-        if (pos == std::wstring::npos) return;
-
-        std::wstring dir = filePath.substr(0, pos);
-
-        // Desteklenen uzantılar (küçük harf — karşılaştırma towlower sonrası yapılır)
-        static const wchar_t* kExts[] = {
-            L".jpg", L".jpeg", L".png", L".bmp", L".gif",
-            L".tiff", L".tif", L".ico", L".webp",
-            L".heic", L".heif", L".jxl", L".avif"
-        };
-
-        // Klasördeki tüm dosyaları tara
-        std::wstring pattern = dir + L"\\*";
-        WIN32_FIND_DATAW fd{};
-        HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
-        if (hFind == INVALID_HANDLE_VALUE) return;
-
-        do {
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-
-            std::wstring name = fd.cFileName;
-            auto dotPos = name.rfind(L'.');
-            if (dotPos == std::wstring::npos) continue;
-
-            // Uzantıyı küçük harfe çevir
-            std::wstring ext = name.substr(dotPos);
-            for (auto& c : ext) c = towlower(c);
-
-            for (auto kExt : kExts)
-            {
-                if (ext == kExt)
-                {
-                    m_files.push_back(dir + L"\\" + name);
-                    break;
-                }
-            }
-        } while (FindNextFileW(hFind, &fd));
-
-        FindClose(hFind);
-
-        // Explorer-uyumlu sıralama: "image2.jpg" < "image10.jpg"
-        std::sort(m_files.begin(), m_files.end(),
-            [](const std::wstring& a, const std::wstring& b) {
-                return StrCmpLogicalW(a.c_str(), b.c_str()) < 0;
-            });
-
-        m_directory = dir;
-
-        // Başlangıç dosyasının sıralı listedeki indeksini bul
-        for (int i = 0; i < static_cast<int>(m_files.size()); ++i)
-        {
-            if (_wcsicmp(m_files[i].c_str(), filePath.c_str()) == 0)
-            {
-                m_index = i;
-                break;
-            }
-        }
-    }
-
-    bool empty() const { return m_files.empty(); }
-    int  total() const { return static_cast<int>(m_files.size()); }
-    int  index() const { return m_index; }
-
+    bool                empty()     const { return m_files.empty(); }
+    int                 total()     const { return static_cast<int>(m_files.size()); }
+    int                 index()     const { return m_index; }
     const std::wstring& directory() const { return m_directory; }
 
-    // Dizini yeniden tara — mevcut konumu korumaya çalışır, silinmişse en yakın dosyaya konumlanır.
-    // Yeni mevcut dosya yolunu döner (klasör boşsa boş string).
-    std::wstring refresh()
-    {
-        if (m_directory.empty()) return {};
+    // Dizini yeniden tara; mevcut konumu korur, silinmişse en yakın dosyaya geçer.
+    std::wstring refresh();
 
-        std::wstring current = m_files.empty() ? L"" : m_files[m_index];
+    const std::wstring& peek_next()             const;
+    const std::wstring& peek_prev()             const;
+    const std::wstring& peek_at(int offset)     const;
+    const std::wstring& peek_at_linear(int offset) const;
 
-        static const wchar_t* kExts[] = {
-            L".jpg", L".jpeg", L".png", L".bmp", L".gif",
-            L".tiff", L".tif", L".ico", L".webp",
-            L".heic", L".heif", L".jxl", L".avif"
-        };
-
-        std::wstring pattern = m_directory + L"\\*";
-        WIN32_FIND_DATAW fd{};
-        HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
-
-        m_files.clear();
-
-        if (hFind != INVALID_HANDLE_VALUE)
-        {
-            do {
-                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-                std::wstring name = fd.cFileName;
-                auto dotPos = name.rfind(L'.');
-                if (dotPos == std::wstring::npos) continue;
-                std::wstring ext = name.substr(dotPos);
-                for (auto& c : ext) c = towlower(c);
-                for (auto kExt : kExts)
-                {
-                    if (ext == kExt)
-                    {
-                        m_files.push_back(m_directory + L"\\" + name);
-                        break;
-                    }
-                }
-            } while (FindNextFileW(hFind, &fd));
-            FindClose(hFind);
-
-            std::sort(m_files.begin(), m_files.end(),
-                [](const std::wstring& a, const std::wstring& b) {
-                    return StrCmpLogicalW(a.c_str(), b.c_str()) < 0;
-                });
-        }
-
-        if (m_files.empty()) return {};
-
-        // Mevcut dosyayı yeni listede ara
-        for (int i = 0; i < static_cast<int>(m_files.size()); ++i)
-        {
-            if (_wcsicmp(m_files[i].c_str(), current.c_str()) == 0)
-            {
-                m_index = i;
-                return m_files[m_index];
-            }
-        }
-
-        // Bulunamadı (silindi) — eski indekse en yakın konuma git
-        if (m_index >= static_cast<int>(m_files.size()))
-            m_index = static_cast<int>(m_files.size()) - 1;
-        if (m_index < 0) m_index = 0;
-        return m_files[m_index];
-    }
-
-    // İndeksi değiştirmeden sonraki/önceki dosya yolunu döner (prefetch için)
-    const std::wstring& peek_next() const
-    {
-        static const std::wstring kEmpty;
-        if (m_files.empty()) return kEmpty;
-        int idx = (m_index + 1) % static_cast<int>(m_files.size());
-        return m_files[idx];
-    }
-
-    const std::wstring& peek_prev() const
-    {
-        static const std::wstring kEmpty;
-        if (m_files.empty()) return kEmpty;
-        int idx = (m_index - 1 + static_cast<int>(m_files.size())) % static_cast<int>(m_files.size());
-        return m_files[idx];
-    }
-
-    // İndeksten offset kadar ilerideki/gerideki dosya yolunu döner (döngüsel, indeks değişmez)
-    const std::wstring& peek_at(int offset) const
-    {
-        static const std::wstring kEmpty;
-        if (m_files.empty()) return kEmpty;
-        int n   = static_cast<int>(m_files.size());
-        int idx = ((m_index + offset) % n + n) % n;
-        return m_files[idx];
-    }
-
-    // Döngüsel olmayan peek — sınır dışındaysa boş string döner (filmstrip için)
-    const std::wstring& peek_at_linear(int offset) const
-    {
-        static const std::wstring kEmpty;
-        if (m_files.empty()) return kEmpty;
-        int idx = m_index + offset;
-        if (idx < 0 || idx >= static_cast<int>(m_files.size())) return kEmpty;
-        return m_files[idx];
-    }
-
-    // İndeksten offset kadar ileri/geri atlayıp yeni konumu döner (döngüsel)
-    const std::wstring& jump(int offset)
-    {
-        if (!m_files.empty())
-        {
-            int n   = static_cast<int>(m_files.size());
-            m_index = ((m_index + offset) % n + n) % n;
-        }
-        return current();
-    }
-
-    // Geçerli dosyanın tam yolunu döner
-    const std::wstring& current() const
-    {
-        static const std::wstring kEmpty;
-        return m_files.empty() ? kEmpty : m_files[m_index];
-    }
-
-    // Sonraki dosyaya geç (son → ilk döngüsel)
-    const std::wstring& next()
-    {
-        if (!m_files.empty())
-            m_index = (m_index + 1) % static_cast<int>(m_files.size());
-        return current();
-    }
-
-    // Önceki dosyaya geç (ilk → son döngüsel)
-    const std::wstring& prev()
-    {
-        if (!m_files.empty())
-            m_index = (m_index - 1 + static_cast<int>(m_files.size())) % static_cast<int>(m_files.size());
-        return current();
-    }
+    const std::wstring& jump(int offset);
+    const std::wstring& current() const;
+    const std::wstring& next();
+    const std::wstring& prev();
 
 private:
     std::vector<std::wstring> m_files;

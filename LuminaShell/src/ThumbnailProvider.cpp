@@ -113,6 +113,7 @@ public:
                                         &pBits, nullptr, 0);
         if (!hbmp || !pBits) return E_OUTOFMEMORY;
 
+        if (pixels.size() < static_cast<size_t>(w) * h * 4) return E_FAIL;
         memcpy(pBits, pixels.data(), static_cast<size_t>(w) * h * 4);
 
         *phbmp    = hbmp;
@@ -215,8 +216,9 @@ HRESULT DllCanUnloadNow()
 
 HRESULT DllRegisterServer()
 {
-    wchar_t dllPath[MAX_PATH];
-    GetModuleFileNameW(g_hModule, dllPath, MAX_PATH);
+    wchar_t dllPath[32768];
+    DWORD pathLen = GetModuleFileNameW(g_hModule, dllPath, 32768);
+    if (pathLen == 0 || pathLen >= 32768) return SELFREG_E_CLASS;
 
     wchar_t clsidBase[128], inproc[160];
     swprintf_s(clsidBase, L"SOFTWARE\\Classes\\CLSID\\%s",                k_clsid);

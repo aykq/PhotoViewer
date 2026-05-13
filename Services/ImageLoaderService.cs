@@ -13,16 +13,9 @@ namespace PhotoViewer.Services
     /// <summary>
     /// Önce WIC (hızlı); olmazsa ImageMagick (geniş format desteği).
     /// </summary>
-    public class ImageLoaderService
+    public class ImageLoaderService : IImageLoaderService
     {
         private const int MaxDisplayLongEdge = 4096;
-
-        public sealed class LoadOutcome
-        {
-            public WriteableBitmap? Bitmap { get; init; }
-            /// <summary>WIC başarısız, ImageMagick ile açıldı.</summary>
-            public bool UsedMagickFallback { get; init; }
-        }
 
         public async Task<LoadOutcome> LoadImageAsync(string filePath, CancellationToken cancellationToken = default)
         {
@@ -165,7 +158,8 @@ namespace PhotoViewer.Services
                     return (null, 0, 0);
 
                 var readSettings = CreateMagickReadSettings(filePath);
-                using var image = new MagickImage(filePath, readSettings);
+                using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var image = new MagickImage(fs, readSettings);
                 image.AutoOrient();
 
                 if (Math.Max(image.Width, image.Height) > MaxDisplayLongEdge)

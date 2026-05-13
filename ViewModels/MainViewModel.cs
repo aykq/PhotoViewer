@@ -14,8 +14,14 @@ namespace PhotoViewer.ViewModels
 {
     public partial class MainViewModel : ObservableObject
     {
-        private readonly ImageLoaderService _imageLoader = new();
-        private readonly MetadataService _metadataService = new();
+        private readonly IImageLoaderService _imageLoader;
+        private readonly IMetadataService _metadataService;
+
+        public MainViewModel(IImageLoaderService imageLoader, IMetadataService metadataService)
+        {
+            _imageLoader = imageLoader;
+            _metadataService = metadataService;
+        }
         private CancellationTokenSource? _loadCts;
         private IReadOnlyList<string> _folderFiles = Array.Empty<string>();
         private int _currentIndex = -1;
@@ -120,7 +126,7 @@ namespace PhotoViewer.ViewModels
             catch (Exception ex)
             {
                 Debug.WriteLine($"LoadPhotoAsync error: {ex}");
-                StatusMessage = $"Yükleme hatası: {ex.Message}";
+                StatusMessage = "Görüntü yüklenemedi.";
             }
         }
 

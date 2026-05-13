@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using PhotoViewer.Services;
 using PhotoViewer.ViewModels;
 using System;
 using System.Runtime.InteropServices;
@@ -10,7 +11,7 @@ namespace PhotoViewer.Views
 {
     public sealed partial class MainWindow : Window
     {
-        public MainViewModel ViewModel { get; } = new MainViewModel();
+        public MainViewModel ViewModel { get; }
 
         private bool _isPanning = false;
         private Windows.Foundation.Point _lastPointerPosition;
@@ -35,6 +36,7 @@ namespace PhotoViewer.Views
 
         public MainWindow()
         {
+            ViewModel = new MainViewModel(new ImageLoaderService(), new MetadataService());
             this.InitializeComponent();
             LoadPanelSettings();
         }

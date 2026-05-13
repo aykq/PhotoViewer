@@ -17,7 +17,7 @@ namespace PhotoViewer.Services
             ".tif", ".tiff", ".heic", ".heif", ".jxl", ".avif", ".ico"
         };
 
-        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)]
+        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
         private static extern int StrCmpLogicalW(string? psz1, string? psz2);
 
         /// <summary>Gezgin ile aynı dosya adı sıralaması (IMG2 &lt; IMG10).</summary>
