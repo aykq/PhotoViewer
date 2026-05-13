@@ -27,6 +27,7 @@
 #include "Renderer.h"
 #include "FolderNavigator.h"
 #include "ImageDecoder.h"
+#include "GeoServices.h"
 
 // --- Sabitler ---
 

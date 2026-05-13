@@ -1,5 +1,6 @@
 #include "Renderer.h"
 #include "ImageDecoder.h"
+#include "GeoServices.h"
 #include <cwchar>
 #include <algorithm>
 

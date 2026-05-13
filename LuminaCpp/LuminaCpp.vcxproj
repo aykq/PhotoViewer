@@ -86,11 +86,13 @@
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\Renderer.cpp" />
     <ClCompile Include="src\ImageDecoder.cpp" />
+    <ClCompile Include="src\GeoServices.cpp" />
   </ItemGroup>
   <!-- Header dosyalar -->
   <ItemGroup>
     <ClInclude Include="src\Renderer.h" />
     <ClInclude Include="src\ImageDecoder.h" />
+    <ClInclude Include="src\GeoServices.h" />
   </ItemGroup>
   <!-- Uygulama kaynakları (icon + versiyon bilgisi) -->
   <ItemGroup>

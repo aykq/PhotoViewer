@@ -8,10 +8,10 @@
 #include <vector>
 
 #include "ImageDecoder.h"
+#include <olectl.h>   // SELFREG_E_CLASS
 
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "windowscodecs.lib")
-#pragma comment(lib, "winhttp.lib")
 
 // ─── CLSID: {3C7F5A2D-4B8E-4F5C-A1B2-3C4D5E6F7A8B} ─────────────────────────
 static const CLSID CLSID_LuminaThumb =

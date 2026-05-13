@@ -56,7 +56,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>$(ProjectDir)src\LuminaShell.def</ModuleDefinitionFile>
-      <AdditionalDependencies>windowscodecs.lib;winhttp.lib;shlwapi.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>windowscodecs.lib;shlwapi.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <!-- Release x64 -->
@@ -78,7 +78,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>$(ProjectDir)src\LuminaShell.def</ModuleDefinitionFile>
-      <AdditionalDependencies>windowscodecs.lib;winhttp.lib;shlwapi.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>windowscodecs.lib;shlwapi.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <!-- Build öncesi: DLL kilidini kaldır (shell host process'i durdur) -->
     <PreBuildEvent>
