@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Get version from tag
         id: version
@@ -24,10 +24,10 @@ jobs:
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce  # v2.0.0
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2  # v11.6
         with:
           vcpkgGitCommitId: 'dbbd673624c057174dd51ef85758951032717715'
 
@@ -62,7 +62,7 @@ jobs:
 
       - name: Install WiX Toolset v4
         shell: pwsh
-        run: dotnet tool install --global wix --version "4.*"
+        run: dotnet tool install --global wix --version "4.0.6"
 
       - name: Build MSI
         shell: pwsh
@@ -92,7 +92,7 @@ jobs:
           }
 
       - name: Attest artifacts
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be  # v2.4.0
         with:
           subject-path: |
             installer/output/Lumina-*-x64-Setup.exe
@@ -110,7 +110,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           name: "Lumina v${{ steps.version.outputs.VERSION }}"
           body: ${{ steps.relnotes.outputs.BODY }}
