@@ -143,6 +143,10 @@ struct SaveDoneResult
 static std::atomic<uint64_t> g_decodeGeneration{0};
 static std::thread            g_decodeThread;
 
+// Konum onay durumu — UI thread'de g_viewState.locationConsent ile eş zamanlı tutulur.
+// Worker thread'lerin güvenli okuyabilmesi için atomic.
+static std::atomic<int>       g_locationConsentAtomic{0};  // 0=NotAsked, 1=Enabled, 2=Disabled
+
 // --- Prefetch cache ---
 
 static std::mutex                                       g_cacheMutex;
@@ -429,7 +433,7 @@ static void StartDecode(HWND hwnd, const std::wstring& path)
         result = nullptr;  // sahiplik UI thread'ine geçti
 
         // ── Aşama 3: Nominatim reverse geocoding (görsel zaten göründü) ─────────
-        if (hasGps && g_decodeGeneration.load() == gen)
+        if (hasGps && g_locationConsentAtomic.load() == 1 && g_decodeGeneration.load() == gen)
         {
             auto locName = FetchLocationCached(gpsLat, gpsLon);
             if (!locName.empty() && g_decodeGeneration.load() == gen)
@@ -625,6 +629,8 @@ static void SaveSettings()
         RegSetValueExW(hKey, L"Use12HourTime", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&val), sizeof(DWORD));
         val = g_viewState.showThumbStrip ? 1 : 0;
         RegSetValueExW(hKey, L"ShowThumbStrip", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&val), sizeof(DWORD));
+        val = static_cast<DWORD>(static_cast<int>(g_viewState.locationConsent));
+        RegSetValueExW(hKey, L"LocationConsent", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&val), sizeof(DWORD));
         RegCloseKey(hKey);
     }
 }
@@ -683,6 +689,12 @@ static void LoadSettings()
         sz = sizeof(DWORD);
         if (RegQueryValueExW(hKey, L"ShowThumbStrip", nullptr, nullptr, reinterpret_cast<LPBYTE>(&val), &sz) == ERROR_SUCCESS)
             g_viewState.showThumbStrip = (val != 0);
+        sz = sizeof(DWORD);
+        if (RegQueryValueExW(hKey, L"LocationConsent", nullptr, nullptr, reinterpret_cast<LPBYTE>(&val), &sz) == ERROR_SUCCESS)
+        {
+            if (val == 1) g_viewState.locationConsent = LocationConsent::Enabled;
+            else if (val == 2) g_viewState.locationConsent = LocationConsent::Disabled;
+        }
 
         // Pencere pozisyon/boyut
         DWORD wx = 0, wy = 0, ww = 0, wh = 0;
@@ -707,6 +719,8 @@ static void LoadSettings()
     // Başlangıçta animasyon yok — doğrudan hedeflere atla
     g_viewState.panelAnimWidth  = g_viewState.showInfoPanel  ? PanelLayout::Width  : 0.0f;
     g_viewState.stripAnimHeight = g_viewState.showThumbStrip ? StripLayout::OpenH  : 0.0f;
+    // Atomic'i ViewState ile senkronize et
+    g_locationConsentAtomic.store(static_cast<int>(g_viewState.locationConsent));
 }
 
 // --- Animasyon başlatıcıları ---
@@ -997,6 +1011,7 @@ static void SaveLocationCache()
 
 static void EnqueueLocationPrefetch(double lat, double lon)
 {
+    if (g_locationConsentAtomic.load() != 1) return;
     wchar_t key[32];
     MakeLocationKey(lat, lon, key, 32);
     {
@@ -1260,17 +1275,19 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
     KillTimer(hwnd, kTooltipDelayTimerID);
     KillTimer(hwnd, kTooltipFadeTimerID);
 
-    bool  keepPanel      = g_viewState.showInfoPanel;
-    float keepAnimWidth  = g_viewState.panelAnimWidth;
-    bool  keep12h        = g_viewState.use12HourTime;
-    bool  keepStrip      = g_viewState.showThumbStrip;
-    float keepStripH     = g_viewState.stripAnimHeight;
+    bool            keepPanel    = g_viewState.showInfoPanel;
+    float           keepAnimW    = g_viewState.panelAnimWidth;
+    bool            keep12h      = g_viewState.use12HourTime;
+    bool            keepStrip    = g_viewState.showThumbStrip;
+    float           keepStripH   = g_viewState.stripAnimHeight;
+    LocationConsent keepConsent  = g_viewState.locationConsent;
     g_viewState = ViewState{};
     g_viewState.showInfoPanel   = keepPanel;
-    g_viewState.panelAnimWidth  = keepAnimWidth;
+    g_viewState.panelAnimWidth  = keepAnimW;
     g_viewState.use12HourTime   = keep12h;
     g_viewState.showThumbStrip  = keepStrip;
     g_viewState.stripAnimHeight = keepStripH;
+    g_viewState.locationConsent = keepConsent;
     if (g_navigator)
     {
         g_viewState.imageIndex = g_navigator->index() + 1;
@@ -1315,8 +1332,8 @@ static void NavigateTo(HWND hwnd, const std::wstring& path)
             TriggerLocationPrefetch();
             UpdateStripSlots(hwnd);
             TriggerThumbFetches(hwnd);
-            // GPS varsa OSM tile'larını arka planda çek (cache hit yolunda da gerekli)
-            if (g_imageInfo.hasGpsDecimal)
+            // GPS varsa OSM tile + konum adı çek — yalnızca kullanıcı onayı varsa
+            if (g_imageInfo.hasGpsDecimal && g_viewState.locationConsent == LocationConsent::Enabled)
             {
                 StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
                 // Önce g_locationCache'den anlık lookup — HTTP gerektirmez
@@ -2560,6 +2577,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 GetClientRect(hwnd, &rc);
                 if (mx >= static_cast<float>(rc.right) - g_viewState.panelAnimWidth)
                 {
+                    // Konum onay butonlarına basış — press state
+                    if (g_renderer && g_renderer->IsLocationConsentVisible())
+                    {
+                        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                        };
+                        if      (inR(mx, my, g_renderer->GetLocationYesRect())) g_viewState.locationConsentPress = 1;
+                        else if (inR(mx, my, g_renderer->GetLocationNoRect()))  g_viewState.locationConsentPress = 2;
+                        if (g_viewState.locationConsentPress != 0)
+                            InvalidateRect(hwnd, nullptr, FALSE);
+                    }
                     g_clickInPanel = true;
                     return 0;
                 }
@@ -2827,6 +2855,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             InvalidateRect(hwnd, nullptr, FALSE);
         }
 
+        // Konum onay butonları hover takibi
+        if (g_renderer && g_renderer->IsLocationConsentVisible())
+        {
+            auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+            };
+            int newHover = 0;
+            if      (inR(mx, my, g_renderer->GetLocationYesRect())) newHover = 1;
+            else if (inR(mx, my, g_renderer->GetLocationNoRect()))  newHover = 2;
+            if (newHover != g_viewState.locationConsentHover)
+            {
+                g_viewState.locationConsentHover = newHover;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+        }
+        else if (g_viewState.locationConsentHover != 0)
+        {
+            g_viewState.locationConsentHover = 0;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+
         // Save bar hover — hangi butonun üzerinde olduğunu güncelle
         if (g_renderer && g_renderer->IsSaveBarVisible())
         {
@@ -2884,6 +2933,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             g_viewState.saveBarHover      = 0;
             g_viewState.saveBarPressedBtn = 0;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        if (g_viewState.locationConsentHover != 0 || g_viewState.locationConsentPress != 0)
+        {
+            g_viewState.locationConsentHover = 0;
+            g_viewState.locationConsentPress = 0;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
@@ -3314,6 +3369,110 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                             L"https://maps.google.com/?q=%.6f,%.6f",
                             g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
                         ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+                        return 0;
+                    }
+                }
+
+                // Konum onay butonları (Evet / Hayır)
+                if (g_renderer->IsLocationConsentVisible())
+                {
+                    int prevPress = g_viewState.locationConsentPress;
+                    g_viewState.locationConsentPress = 0;
+                    auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                        return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                    };
+                    if (inR(mx, my, g_renderer->GetLocationYesRect()))
+                    {
+                        g_viewState.locationConsent = LocationConsent::Enabled;
+                        g_locationConsentAtomic.store(1);
+                        SaveSettings();
+                        // Mevcut fotoğraf için hemen tile + konum çek
+                        if (g_imageInfo.hasGpsDecimal)
+                        {
+                            g_renderer->ClearMapTiles();
+                            StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                            if (g_imageInfo.gpsLocationName.empty())
+                                g_imageInfo.gpsLocationName =
+                                    LookupLocationFromCache(g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                            if (g_imageInfo.gpsLocationName.empty())
+                            {
+                                const uint64_t gen = g_decodeGeneration.load();
+                                const double   lat = g_imageInfo.gpsLatDecimal;
+                                const double   lon = g_imageInfo.gpsLonDecimal;
+                                std::thread([hwnd, lat, lon, gen]()
+                                {
+                                    auto locName = FetchLocationCached(lat, lon);
+                                    if (!locName.empty() && g_decodeGeneration.load() == gen)
+                                    {
+                                        auto* loc         = new LocationResult{};
+                                        loc->locationName = std::move(locName);
+                                        loc->generation   = gen;
+                                        PostMessage(hwnd, WM_LOCATION_DONE, 0,
+                                                    reinterpret_cast<LPARAM>(loc));
+                                    }
+                                }).detach();
+                            }
+                        }
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    if (inR(mx, my, g_renderer->GetLocationNoRect()))
+                    {
+                        g_viewState.locationConsent = LocationConsent::Disabled;
+                        g_locationConsentAtomic.store(2);
+                        SaveSettings();
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    if (prevPress != 0)
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                }
+
+                // Konum toggle linki (Kapat / Aç)
+                if (g_renderer->IsLocationToggleVisible())
+                {
+                    D2D1_RECT_F r = g_renderer->GetLocationToggleRect();
+                    if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
+                    {
+                        if (g_viewState.locationConsent == LocationConsent::Enabled)
+                        {
+                            g_viewState.locationConsent = LocationConsent::Disabled;
+                            g_locationConsentAtomic.store(2);
+                        }
+                        else if (g_viewState.locationConsent == LocationConsent::Disabled)
+                        {
+                            g_viewState.locationConsent = LocationConsent::Enabled;
+                            g_locationConsentAtomic.store(1);
+                            // Mevcut fotoğraf için hemen tile + konum çek
+                            if (g_imageInfo.hasGpsDecimal)
+                            {
+                                g_renderer->ClearMapTiles();
+                                StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                                if (g_imageInfo.gpsLocationName.empty())
+                                    g_imageInfo.gpsLocationName =
+                                        LookupLocationFromCache(g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                                if (g_imageInfo.gpsLocationName.empty())
+                                {
+                                    const uint64_t gen = g_decodeGeneration.load();
+                                    const double   lat = g_imageInfo.gpsLatDecimal;
+                                    const double   lon = g_imageInfo.gpsLonDecimal;
+                                    std::thread([hwnd, lat, lon, gen]()
+                                    {
+                                        auto locName = FetchLocationCached(lat, lon);
+                                        if (!locName.empty() && g_decodeGeneration.load() == gen)
+                                        {
+                                            auto* loc         = new LocationResult{};
+                                            loc->locationName = std::move(locName);
+                                            loc->generation   = gen;
+                                            PostMessage(hwnd, WM_LOCATION_DONE, 0,
+                                                        reinterpret_cast<LPARAM>(loc));
+                                        }
+                                    }).detach();
+                                }
+                            }
+                        }
+                        SaveSettings();
+                        InvalidateRect(hwnd, nullptr, FALSE);
                         return 0;
                     }
                 }
@@ -4042,8 +4201,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             // Strip slot'larını güncelle (ilk açılışta NavigateTo çağrılmaz, burada yapılır)
             UpdateStripSlots(hwnd);
             TriggerThumbFetches(hwnd);
-            // GPS varsa OSM tile'larını arka planda çek (META_DONE başlatmadıysa)
-            if (g_imageInfo.hasGpsDecimal && !tilesAlreadyStarted)
+            // GPS varsa OSM tile'larını arka planda çek (META_DONE başlatmadıysa, onay varsa)
+            if (g_imageInfo.hasGpsDecimal && !tilesAlreadyStarted
+                && g_viewState.locationConsent == LocationConsent::Enabled)
                 StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
         }
 
@@ -4060,8 +4220,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             meta->info.filename      = g_imageInfo.filename;
             meta->info.fileSizeBytes = g_imageInfo.fileSizeBytes;
             g_imageInfo = std::move(meta->info);
-            // GPS varsa OSM tile'larını hemen başlat — piksel decode bekleme
-            if (g_imageInfo.hasGpsDecimal)
+            // GPS varsa OSM tile'larını hemen başlat — yalnızca kullanıcı onayı varsa
+            if (g_imageInfo.hasGpsDecimal && g_viewState.locationConsent == LocationConsent::Enabled)
                 StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
             InvalidateRect(hwnd, nullptr, FALSE);
         }

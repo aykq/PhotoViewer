@@ -615,6 +615,8 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
         DrawRow(L"ISO", info->iso);
 
         // GPS section — sadece koordinat varsa
+        m_locationConsentVisible = false;
+        m_locationToggleVisible  = false;
         if (!info->gpsLatitude.empty() || !info->gpsLongitude.empty())
         {
             y += 4.0f;
@@ -707,16 +709,144 @@ void Renderer::DrawInfoPanel(const ViewState& vs, const ImageInfo* info)
             }
             y += kRowH;
 
-            // Konum adı (Nominatim reverse geocoding)
-            DrawRow(L"Location", info->gpsLocationName);
-            DrawRow(L"Altitude", info->gpsAltitude);
-
-            // OSM harita önizlemesi — decimal koordinat varsa
-            if (info->hasGpsDecimal)
+            if (vs.locationConsent == LocationConsent::NotAsked && info->hasGpsDecimal)
             {
-                y += 8.0f;
-                DrawMapPreview(x0, x1, y, vs, info);
-                y += 150.0f + 8.0f;
+                // Onay istenmemiş — kullanıcıdan izin al
+                constexpr float kPromptH = 38.0f;
+                const wchar_t* kPromptText =
+                    L"Konum adı için GPS koordinatları photon.komoot.io adresine gönderilecek.";
+                m_renderTarget->DrawText(
+                    kPromptText, static_cast<UINT32>(wcslen(kPromptText)),
+                    m_labelFormat,
+                    D2D1::RectF(x0, y, x1, y + kPromptH),
+                    m_grayBrush
+                );
+                y += kPromptH + 8.0f;
+
+                constexpr float kBtnH   = 28.0f;
+                constexpr float kBtnGap =  8.0f;
+                float btnW = (x1 - x0 - kBtnGap) * 0.5f;
+
+                D2D1_RECT_F       yesRect = D2D1::RectF(x0,                   y, x0 + btnW, y + kBtnH);
+                D2D1_RECT_F       noRect  = D2D1::RectF(x0 + btnW + kBtnGap,  y, x1,        y + kBtnH);
+                D2D1_ROUNDED_RECT yesRR   = { yesRect, 5.0f, 5.0f };
+                D2D1_ROUNDED_RECT noRR    = { noRect,  5.0f, 5.0f };
+
+                // Evet butonu — yeşil outline + hover/press fill
+                ID2D1SolidColorBrush* greenBrush = nullptr;
+                m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0x4CAF50), &greenBrush);
+                if (greenBrush)
+                {
+                    if (vs.locationConsentPress == 1)
+                        m_renderTarget->FillRoundedRectangle(yesRR, greenBrush);
+                    else if (vs.locationConsentHover == 1)
+                    {
+                        ID2D1SolidColorBrush* hoverBrush = nullptr;
+                        m_renderTarget->CreateSolidColorBrush(D2D1::ColorF(0x4CAF50, 0.18f), &hoverBrush);
+                        if (hoverBrush)
+                        {
+                            m_renderTarget->FillRoundedRectangle(yesRR, hoverBrush);
+                            hoverBrush->Release();
+                        }
+                    }
+                    m_renderTarget->DrawRoundedRectangle(yesRR, greenBrush, 1.0f);
+                    ID2D1SolidColorBrush* textBrush = (vs.locationConsentPress == 1) ? m_whiteBrush : greenBrush;
+                    m_renderTarget->DrawText(L"Evet", 4, m_btnFormat, yesRect, textBrush);
+                    greenBrush->Release();
+                }
+
+                // Hayır butonu — gray outline + hover/press fill
+                if (m_separatorBrush && m_grayBrush)
+                {
+                    if (vs.locationConsentPress == 2)
+                    {
+                        float savedOp = m_overlayBrush->GetOpacity();
+                        m_overlayBrush->SetOpacity(0.22f);
+                        m_renderTarget->FillRoundedRectangle(noRR, m_overlayBrush);
+                        m_overlayBrush->SetOpacity(savedOp);
+                    }
+                    else if (vs.locationConsentHover == 2)
+                    {
+                        float savedOp = m_overlayBrush->GetOpacity();
+                        m_overlayBrush->SetOpacity(0.10f);
+                        m_renderTarget->FillRoundedRectangle(noRR, m_overlayBrush);
+                        m_overlayBrush->SetOpacity(savedOp);
+                    }
+                    m_renderTarget->DrawRoundedRectangle(noRR, m_separatorBrush, 1.0f);
+                    m_renderTarget->DrawText(L"Hayır", 5, m_btnFormat, noRect, m_grayBrush);
+                }
+
+                m_locationYesRect        = yesRect;
+                m_locationNoRect         = noRect;
+                m_locationConsentVisible = true;
+                y += kBtnH + 8.0f;
+            }
+            else if (vs.locationConsent == LocationConsent::Enabled)
+            {
+                // Konum adı ve harita
+                DrawRow(L"Location", info->gpsLocationName);
+                DrawRow(L"Altitude", info->gpsAltitude);
+
+                if (info->hasGpsDecimal)
+                {
+                    y += 8.0f;
+                    DrawMapPreview(x0, x1, y, vs, info);
+                    y += 150.0f + 8.0f;
+                }
+
+                // "Kapat" toggle linki
+                if (m_dwriteFactory && m_grayBrush)
+                {
+                    m_renderTarget->DrawText(
+                        L"Konum araması", 13, m_labelFormat,
+                        D2D1::RectF(x0, y, x1 - 52.0f, y + kLabelH),
+                        m_grayBrush
+                    );
+                    IDWriteTextLayout* layout = nullptr;
+                    if (SUCCEEDED(m_dwriteFactory->CreateTextLayout(
+                        L"Kapat", 5, m_valueFormat, 52.0f, kLabelH, &layout)))
+                    {
+                        DWRITE_TEXT_RANGE all = { 0, 5 };
+                        layout->SetUnderline(TRUE, all);
+                        float tx = x1 - 50.0f;
+                        m_renderTarget->DrawTextLayout(D2D1::Point2F(tx, y), layout, m_grayBrush);
+                        DWRITE_TEXT_METRICS tm{};
+                        layout->GetMetrics(&tm);
+                        m_locationToggleRect    = D2D1::RectF(tx, y, tx + tm.widthIncludingTrailingWhitespace, y + tm.height);
+                        m_locationToggleVisible = true;
+                        layout->Release();
+                    }
+                    y += kLabelH + 8.0f;
+                }
+            }
+            else  // Disabled (veya NotAsked && decimal koordinat yok)
+            {
+                // Harita yok, konum araması kapalı
+                DrawRow(L"Altitude", info->gpsAltitude);
+
+                if (vs.locationConsent == LocationConsent::Disabled && m_dwriteFactory && m_grayBrush)
+                {
+                    m_renderTarget->DrawText(
+                        L"Konum araması", 13, m_labelFormat,
+                        D2D1::RectF(x0, y, x1 - 30.0f, y + kLabelH),
+                        m_grayBrush
+                    );
+                    IDWriteTextLayout* layout = nullptr;
+                    if (SUCCEEDED(m_dwriteFactory->CreateTextLayout(
+                        L"Aç", 2, m_valueFormat, 30.0f, kLabelH, &layout)))
+                    {
+                        DWRITE_TEXT_RANGE all = { 0, 2 };
+                        layout->SetUnderline(TRUE, all);
+                        float tx = x1 - 28.0f;
+                        m_renderTarget->DrawTextLayout(D2D1::Point2F(tx, y), layout, m_grayBrush);
+                        DWRITE_TEXT_METRICS tm{};
+                        layout->GetMetrics(&tm);
+                        m_locationToggleRect    = D2D1::RectF(tx, y, tx + tm.widthIncludingTrailingWhitespace, y + tm.height);
+                        m_locationToggleVisible = true;
+                        layout->Release();
+                    }
+                    y += kLabelH + 8.0f;
+                }
             }
         }
     }

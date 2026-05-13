@@ -94,6 +94,8 @@ struct ImageInfo
     std::wstring errorMessage;
 };
 
+enum class LocationConsent { NotAsked = 0, Enabled = 1, Disabled = 2 };
+
 // Görüntünün ekrandaki dönüşüm durumu.
 // WndProc fare/klavye olaylarında günceller; Renderer sadece okur.
 struct ViewState
@@ -174,6 +176,11 @@ struct ViewState
     int   cropDlgPressedBtn  = 0;
     bool  editBtnCropPressed = false;
 
+    // Konum onay durumu — Registry'den yüklenir, kullanıcı GPS panelinden değiştirir
+    LocationConsent locationConsent      = LocationConsent::NotAsked;
+    int             locationConsentHover = 0;       // 0=yok, 1=Evet, 2=Hayır
+    int             locationConsentPress = 0;       // 0=yok, 1=Evet, 2=Hayır
+
     // Animasyon geçiş durumları
     float dialogAlpha      = 1.0f;  // modal dialog fade-in (0=gizli, 1=tam görünür)
     float saveBarAlpha     = 0.0f;  // save bar fade-in (0=gizli, 1=tam görünür)
@@ -229,6 +236,15 @@ public:
 
     // Koordinat kopyalandı bildirimi — 1.5s yeşil tik gösterimi başlatır.
     void MarkCoordsCopied() { m_mapCopiedAt = GetTickCount64(); }
+
+    // Konum onay butonları — GPS panelinde NotAsked durumunda görünür
+    D2D1_RECT_F GetLocationYesRect()       const { return m_locationYesRect; }
+    D2D1_RECT_F GetLocationNoRect()        const { return m_locationNoRect; }
+    bool        IsLocationConsentVisible() const { return m_locationConsentVisible; }
+
+    // Konum toggle linki — Enabled/Disabled durumunda "Kapat"/"Aç" linki
+    D2D1_RECT_F GetLocationToggleRect()    const { return m_locationToggleRect; }
+    bool        IsLocationToggleVisible()  const { return m_locationToggleVisible; }
 
     // Tile cache'ini temizle — yeniden çekme için.
     void ClearMapTiles()
@@ -381,6 +397,15 @@ private:
     // GPS link rect — DrawInfoPanel tarafından doldurulur
     D2D1_RECT_F            m_gpsLinkRect    = {};
     bool                   m_gpsLinkVisible = false;
+
+    // Konum onay butonları (NotAsked durumu)
+    D2D1_RECT_F            m_locationYesRect       = {};
+    D2D1_RECT_F            m_locationNoRect        = {};
+    bool                   m_locationConsentVisible = false;
+
+    // Konum toggle linki ("Kapat"/"Aç")
+    D2D1_RECT_F            m_locationToggleRect    = {};
+    bool                   m_locationToggleVisible = false;
 
     // Animasyon bitmap dizisi (cihaza bağlı) + frame süresi
     std::vector<ID2D1Bitmap*> m_animBitmaps;

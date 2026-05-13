@@ -380,3 +380,4 @@ scripts/
 installer/output/
 memory/feedback_build.md
 memory/MEMORY.md
+.claude/commands/tag.md
