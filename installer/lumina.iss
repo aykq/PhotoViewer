@@ -177,8 +177,8 @@ Root: HKLM; Subkey: "SOFTWARE\Lumina\Capabilities\FileAssociations"; ValueType: 
 ; Shell extension CLSID ACLs — prevent standard users from redirecting DLL path
 ; Applied after regserver calls DllRegisterServer(), which creates the keys.
 ; ──────────────────────────────────────────────────────────────────────────────
-Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{{#ClsidLuminaShell}}";                    Flags: uninsdeletekey; Permissions: admins-full,system-full,users-readexec
-Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{{#ClsidLuminaShell}}\InprocServer32";     Permissions: admins-full,system-full,users-readexec
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{{#ClsidLuminaShell}}";                    Flags: uninsdeletekey; Permissions: admins-full system-full users-readexec
+Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{{#ClsidLuminaShell}}\InprocServer32";     Permissions: admins-full system-full users-readexec
 
 [Code]
 function InitializeSetup(): Boolean;
