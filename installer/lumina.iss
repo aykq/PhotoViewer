@@ -179,3 +179,23 @@ Root: HKLM; Subkey: "SOFTWARE\Lumina\Capabilities\FileAssociations"; ValueType: 
 ; ──────────────────────────────────────────────────────────────────────────────
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{{#ClsidLuminaShell}}";                    Flags: uninsdeletekey; Permissions: admins-full,system-full,users-readexec
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{{#ClsidLuminaShell}}\InprocServer32";     Permissions: admins-full,system-full,users-readexec
+
+[Code]
+function InitializeSetup(): Boolean;
+begin
+  Result := True;
+  if GetEnv('GITHUB_ACTIONS') <> 'true' then
+  begin
+    if MsgBox(
+      'WARNING: Local Build' + #13#10 + #13#10 +
+      'This installer is being compiled outside of the official CI pipeline.' + #13#10 +
+      'Release installers must only be built via GitHub Actions to ensure' + #13#10 +
+      'supply-chain integrity (SLSA provenance attestation, SHA-256 checksums).' + #13#10 + #13#10 +
+      'Do NOT distribute this installer. Proceed only for local testing.' + #13#10 + #13#10 +
+      'Continue anyway?',
+      mbConfirmation, MB_YESNO) = IDNO then
+    begin
+      Result := False;
+    end;
+  end;
+end;
