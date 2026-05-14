@@ -2216,6 +2216,2011 @@ static void ApplyTitleBarTheme(HWND hwnd)
     DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 }
 
+// ─── WM_TIMER sub-handlers ───────────────────────────────────────────────────
+
+static void Timer_ZoomIndicator(HWND hwnd)
+{
+    KillTimer(hwnd, kZoomIndicatorTimerID);
+    QueryPerformanceCounter(&g_zoomFadeLastTime);
+    SetTimer(hwnd, kZoomFadeTimerID, kAnimIntervalMs, nullptr);
+}
+
+static void Timer_ZoomFade(HWND hwnd)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    float dt = static_cast<float>(now.QuadPart - g_zoomFadeLastTime.QuadPart)
+               / static_cast<float>(g_qpcFreq.QuadPart);
+    g_zoomFadeLastTime = now;
+    dt = min(dt, 0.1f);
+    constexpr float kFadeSpeed = 1.5f;
+    g_viewState.zoomIndicatorAlpha -= dt * kFadeSpeed;
+    if (g_viewState.zoomIndicatorAlpha <= 0.0f)
+    {
+        g_viewState.zoomIndicatorAlpha = 0.0f;
+        KillTimer(hwnd, kZoomFadeTimerID);
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void Timer_TooltipDelay(HWND hwnd)
+{
+    KillTimer(hwnd, kTooltipDelayTimerID);
+    if (g_viewState.editToolbarHoverBtn != 0)
+    {
+        QueryPerformanceCounter(&g_tooltipFadeLastTime);
+        SetTimer(hwnd, kTooltipFadeTimerID, kAnimIntervalMs, nullptr);
+    }
+}
+
+static void Timer_TooltipFade(HWND hwnd)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    float dt = static_cast<float>(now.QuadPart - g_tooltipFadeLastTime.QuadPart)
+               / static_cast<float>(g_qpcFreq.QuadPart);
+    g_tooltipFadeLastTime = now;
+    dt = min(dt, 0.1f);
+    constexpr float kFadeSpeed = 10.0f;
+    g_viewState.editToolbarTooltipAlpha += dt * kFadeSpeed;
+    if (g_viewState.editToolbarTooltipAlpha >= 1.0f)
+    {
+        g_viewState.editToolbarTooltipAlpha = 1.0f;
+        KillTimer(hwnd, kTooltipFadeTimerID);
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void Timer_PanelAnim(HWND hwnd)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    float dt = static_cast<float>(now.QuadPart - g_panelAnimLastTime.QuadPart)
+               / static_cast<float>(g_qpcFreq.QuadPart);
+    g_panelAnimLastTime = now;
+    dt = min(dt, 0.1f);
+    float lerp   = 1.0f - expf(-dt * kPanelAnimSpeed);
+    float target = g_viewState.showInfoPanel ? PanelLayout::Width : 0.0f;
+    float diff   = target - g_viewState.panelAnimWidth;
+    if (fabsf(diff) < 0.5f)
+    {
+        g_viewState.panelAnimWidth = target;
+        KillTimer(hwnd, kPanelAnimTimerID);
+    }
+    else
+    {
+        g_viewState.panelAnimWidth += diff * lerp;
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void Timer_ZoomAnim(HWND hwnd)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    float dt = static_cast<float>(now.QuadPart - g_zoomAnimLastTime.QuadPart)
+               / static_cast<float>(g_qpcFreq.QuadPart);
+    g_zoomAnimLastTime = now;
+    dt = min(dt, 0.1f);
+    float lerp     = 1.0f - expf(-dt * kZoomAnimSpeed);
+    float zoomDiff = g_viewState.zoomTarget - g_viewState.zoomFactor;
+    float panXDiff = g_viewState.panXTarget - g_viewState.panX;
+    float panYDiff = g_viewState.panYTarget - g_viewState.panY;
+    if (fabsf(zoomDiff) < 0.0005f && fabsf(panXDiff) < 0.3f && fabsf(panYDiff) < 0.3f)
+    {
+        g_viewState.zoomFactor = g_viewState.zoomTarget;
+        g_viewState.panX       = g_viewState.panXTarget;
+        g_viewState.panY       = g_viewState.panYTarget;
+        KillTimer(hwnd, kZoomAnimTimerID);
+    }
+    else
+    {
+        g_viewState.zoomFactor += zoomDiff * lerp;
+        g_viewState.panX       += panXDiff * lerp;
+        g_viewState.panY       += panYDiff * lerp;
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void Timer_Anim(HWND hwnd)
+{
+    KillTimer(hwnd, kAnimTimerID);
+    if (g_renderer && g_renderer->IsAnimated())
+    {
+        int nextDur = g_renderer->AdvanceFrame();
+        SetTimer(hwnd, kAnimTimerID, static_cast<UINT>(nextDur), nullptr);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+}
+
+static void Timer_IndexIdle(HWND hwnd)
+{
+    KillTimer(hwnd, kIndexIdleTimerID);
+    QueryPerformanceCounter(&g_indexFadeLastTime);
+    SetTimer(hwnd, kIndexFadeTimerID, kAnimIntervalMs, nullptr);
+}
+
+static void Timer_IndexFade(HWND hwnd)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    float dt = static_cast<float>(now.QuadPart - g_indexFadeLastTime.QuadPart)
+               / static_cast<float>(g_qpcFreq.QuadPart);
+    g_indexFadeLastTime = now;
+    dt = min(dt, 0.1f);
+    constexpr float kFadeSpeed = 1.5f;
+    g_viewState.indexBarAlpha -= dt * kFadeSpeed;
+    if (g_viewState.indexBarAlpha <= 0.0f)
+    {
+        g_viewState.indexBarAlpha = 0.0f;
+        KillTimer(hwnd, kIndexFadeTimerID);
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void Timer_StripAnim(HWND hwnd)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    float dt = static_cast<float>(now.QuadPart - g_stripAnimLastTime.QuadPart)
+               / static_cast<float>(g_qpcFreq.QuadPart);
+    g_stripAnimLastTime = now;
+    dt = min(dt, 0.1f);
+    float lerp   = 1.0f - expf(-dt * kStripAnimSpeed);
+    float target = g_viewState.showThumbStrip ? StripLayout::OpenH : 0.0f;
+    float diff   = target - g_viewState.stripAnimHeight;
+    if (fabsf(diff) < 0.5f)
+    {
+        g_viewState.stripAnimHeight = target;
+        KillTimer(hwnd, kStripAnimTimerID);
+    }
+    else
+    {
+        g_viewState.stripAnimHeight += diff * lerp;
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void Timer_CopyFeedback(HWND hwnd)
+{
+    KillTimer(hwnd, kCopyFeedbackTimerID);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void Timer_EditToolbarIdle(HWND hwnd)
+{
+    KillTimer(hwnd, kEditToolbarIdleTimerID);
+    if (!g_viewState.editDirty)
+    {
+        QueryPerformanceCounter(&g_editToolbarFadeLastTime);
+        SetTimer(hwnd, kEditToolbarFadeTimerID, kAnimIntervalMs, nullptr);
+    }
+}
+
+static void Timer_EditToolbarFade(HWND hwnd)
+{
+    if (g_viewState.editDirty)
+    {
+        KillTimer(hwnd, kEditToolbarFadeTimerID);
+        return;
+    }
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    float dt = static_cast<float>(now.QuadPart - g_editToolbarFadeLastTime.QuadPart)
+               / static_cast<float>(g_qpcFreq.QuadPart);
+    g_editToolbarFadeLastTime = now;
+    dt = min(dt, 0.1f);
+    constexpr float kFadeSpeed = 2.0f;
+    g_viewState.editToolbarAlpha -= dt * kFadeSpeed;
+    if (g_viewState.editToolbarAlpha <= 0.0f)
+    {
+        g_viewState.editToolbarAlpha = 0.0f;
+        KillTimer(hwnd, kEditToolbarFadeTimerID);
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void Timer_DialogFade(HWND hwnd)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    float dt = min(static_cast<float>(now.QuadPart - g_dialogFadeLastTime.QuadPart)
+                   / static_cast<float>(g_qpcFreq.QuadPart), 0.1f);
+    g_dialogFadeLastTime = now;
+    float lerp = 1.0f - expf(-dt * kDialogFadeSpeed);
+    g_viewState.dialogAlpha += (1.0f - g_viewState.dialogAlpha) * lerp;
+    if (g_viewState.dialogAlpha >= 0.99f)
+    {
+        g_viewState.dialogAlpha = 1.0f;
+        KillTimer(hwnd, kDialogFadeTimerID);
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void Timer_SaveBarFade(HWND hwnd)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    float dt = min(static_cast<float>(now.QuadPart - g_saveBarFadeLastTime.QuadPart)
+                   / static_cast<float>(g_qpcFreq.QuadPart), 0.1f);
+    g_saveBarFadeLastTime = now;
+    float lerp = 1.0f - expf(-dt * kSaveBarFadeSpeed);
+    g_viewState.saveBarAlpha += (1.0f - g_viewState.saveBarAlpha) * lerp;
+    if (g_viewState.saveBarAlpha >= 0.99f)
+    {
+        g_viewState.saveBarAlpha = 1.0f;
+        KillTimer(hwnd, kSaveBarFadeTimerID);
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void Timer_EditMoreFade(HWND hwnd)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    float dt = min(static_cast<float>(now.QuadPart - g_editMoreFadeLastTime.QuadPart)
+                   / static_cast<float>(g_qpcFreq.QuadPart), 0.1f);
+    g_editMoreFadeLastTime = now;
+    float lerp   = 1.0f - expf(-dt * kEditMoreFadeSpeed);
+    float target = g_viewState.editMoreExpanded ? 1.0f : 0.0f;
+    g_viewState.editMoreAlpha += (target - g_viewState.editMoreAlpha) * lerp;
+    bool done = g_viewState.editMoreExpanded
+                ? (g_viewState.editMoreAlpha >= 0.99f)
+                : (g_viewState.editMoreAlpha <= 0.01f);
+    if (done)
+    {
+        g_viewState.editMoreAlpha = target;
+        KillTimer(hwnd, kEditMoreFadeTimerID);
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static void Timer_DirChange(HWND hwnd)
+{
+    KillTimer(hwnd, kDirChangeTimerID);
+    if (g_navigator && !g_navigator->empty())
+    {
+        std::wstring currentPath = g_navigator->current();
+        bool currentExists =
+            GetFileAttributesW(currentPath.c_str()) != INVALID_FILE_ATTRIBUTES;
+        g_navigator->refresh();
+        if (g_navigator->empty())
+        {
+            if (g_renderer) { g_renderer->ClearImage(); g_renderer->SetStripSlots({}, 0); }
+            g_viewState = ViewState{};
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        else
+        {
+            g_viewState.imageIndex = g_navigator->index() + 1;
+            g_viewState.imageTotal = g_navigator->total();
+            if (!currentExists && !g_viewState.editDirty)
+            {
+                NavigateTo(hwnd, g_navigator->current());
+            }
+            else
+            {
+                ++g_thumbCancel;
+                UpdateStripSlots(hwnd);
+                TriggerThumbFetches(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+        }
+    }
+}
+
+static LRESULT On_WM_TIMER(HWND hwnd, WPARAM wParam)
+{
+    if      (wParam == kZoomIndicatorTimerID)   Timer_ZoomIndicator(hwnd);
+    else if (wParam == kZoomFadeTimerID)         Timer_ZoomFade(hwnd);
+    else if (wParam == kTooltipDelayTimerID)     Timer_TooltipDelay(hwnd);
+    else if (wParam == kTooltipFadeTimerID)      Timer_TooltipFade(hwnd);
+    else if (wParam == kPanelAnimTimerID)        Timer_PanelAnim(hwnd);
+    else if (wParam == kZoomAnimTimerID)         Timer_ZoomAnim(hwnd);
+    else if (wParam == kAnimTimerID)             Timer_Anim(hwnd);
+    else if (wParam == kIndexIdleTimerID)        Timer_IndexIdle(hwnd);
+    else if (wParam == kIndexFadeTimerID)        Timer_IndexFade(hwnd);
+    else if (wParam == kStripAnimTimerID)        Timer_StripAnim(hwnd);
+    else if (wParam == kCopyFeedbackTimerID)     Timer_CopyFeedback(hwnd);
+    else if (wParam == kEditToolbarIdleTimerID)  Timer_EditToolbarIdle(hwnd);
+    else if (wParam == kEditToolbarFadeTimerID)  Timer_EditToolbarFade(hwnd);
+    else if (wParam == kDialogFadeTimerID)       Timer_DialogFade(hwnd);
+    else if (wParam == kSaveBarFadeTimerID)      Timer_SaveBarFade(hwnd);
+    else if (wParam == kEditMoreFadeTimerID)     Timer_EditMoreFade(hwnd);
+    else if (wParam == kDirChangeTimerID)        Timer_DirChange(hwnd);
+    return 0;
+}
+
+// ─── WM_KEYDOWN sub-handlers ─────────────────────────────────────────────────
+
+static bool KeyDown_CropDialog(HWND hwnd, WPARAM wParam)
+{
+    if (!g_viewState.showCropDialog) return false;
+    if (wParam == VK_ESCAPE)
+    {
+        g_viewState.showCropDialog    = false;
+        g_viewState.cropDlgHoverBtn   = 0;
+        g_viewState.cropDlgPressedBtn = 0;
+        g_cropDragging   = false;
+        g_cropDragHandle = 0;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    else if (wParam == VK_RETURN)
+        DoApplyCrop(hwnd);
+    return true;
+}
+
+static bool KeyDown_RotateFreeDlg(HWND hwnd, WPARAM wParam)
+{
+    if (!g_viewState.showRotateFreeDialog) return false;
+    auto clamp45 = [](float a) { return a < -45.0f ? -45.0f : (a > 45.0f ? 45.0f : a); };
+    if (wParam == VK_ESCAPE)
+    {
+        g_viewState.showRotateFreeDialog  = false;
+        g_viewState.rotateFreeDlgHoverBtn = 0;
+        g_viewState.rotateFreeDlgPressBtn = 0;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    else if (wParam == VK_RETURN)
+        DoApplyRotateFree(hwnd);
+    else if (wParam == VK_LEFT)
+    {
+        float step = (GetKeyState(VK_SHIFT) & 0x8000) ? 1.0f : 0.1f;
+        g_viewState.rotateFreeAngle = clamp45(g_viewState.rotateFreeAngle - step);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    else if (wParam == VK_RIGHT)
+    {
+        float step = (GetKeyState(VK_SHIFT) & 0x8000) ? 1.0f : 0.1f;
+        g_viewState.rotateFreeAngle = clamp45(g_viewState.rotateFreeAngle + step);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    return true;
+}
+
+static bool KeyDown_ResizeDlg(HWND hwnd, WPARAM wParam)
+{
+    if (!g_viewState.showResizeDialog) return false;
+    if (wParam == VK_ESCAPE)
+    {
+        g_viewState.showResizeDialog    = false;
+        g_viewState.resizeDlgHoverBtn   = 0;
+        g_viewState.resizeDlgPressedBtn = 0;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    else if (wParam == VK_RETURN)
+        DoResizeConfirmed(hwnd);
+    return true;
+}
+
+static bool KeyDown_DeleteDlg(HWND hwnd, WPARAM wParam)
+{
+    if (!g_viewState.showDeleteConfirmDialog && !g_viewState.showUnsavedWarningDialog)
+        return false;
+    if (wParam == VK_ESCAPE)
+    {
+        g_viewState.showDeleteConfirmDialog  = false;
+        g_viewState.showUnsavedWarningDialog = false;
+        g_viewState.deleteDlgHoverBtn        = 0;
+        g_viewState.deleteDlgPressedBtn      = 0;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    else if (wParam == VK_RETURN)
+    {
+        bool isWarning = g_viewState.showUnsavedWarningDialog;
+        g_viewState.showDeleteConfirmDialog  = false;
+        g_viewState.showUnsavedWarningDialog = false;
+        g_viewState.deleteDlgHoverBtn        = 0;
+        g_viewState.deleteDlgPressedBtn      = 0;
+        if (!isWarning)
+            DoDeleteConfirmed(hwnd);
+        else
+            InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    return true;
+}
+
+static LRESULT On_WM_KEYDOWN(HWND hwnd, WPARAM wParam)
+{
+    ResetIndexIdleTimer(hwnd);
+    if (KeyDown_CropDialog(hwnd, wParam))    return 0;
+    if (KeyDown_RotateFreeDlg(hwnd, wParam)) return 0;
+    if (KeyDown_ResizeDlg(hwnd, wParam))     return 0;
+    if (KeyDown_DeleteDlg(hwnd, wParam))     return 0;
+
+    switch (wParam)
+    {
+    case VK_ESCAPE:
+        DestroyWindow(hwnd);
+        break;
+    case 'W':
+        if (GetKeyState(VK_CONTROL) & 0x8000)
+            DestroyWindow(hwnd);
+        break;
+    case 'I':
+        g_viewState.showInfoPanel = !g_viewState.showInfoPanel;
+        SaveSettings();
+        StartPanelAnim(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        break;
+    case 'T':
+        g_viewState.use12HourTime = !g_viewState.use12HourTime;
+        SaveSettings();
+        InvalidateRect(hwnd, nullptr, FALSE);
+        break;
+    case 'F':
+        g_viewState.showThumbStrip = !g_viewState.showThumbStrip;
+        SaveSettings();
+        StartStripAnim(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        break;
+    case VK_LEFT:
+        if (GetKeyState(VK_CONTROL) & 0x8000)
+            DoRotateCCW(hwnd);
+        else if (g_navigator && !g_navigator->empty())
+            NavigateTo(hwnd, g_navigator->prev());
+        break;
+    case VK_RIGHT:
+        if (GetKeyState(VK_CONTROL) & 0x8000)
+            DoRotateCW(hwnd);
+        else if (g_navigator && !g_navigator->empty())
+            NavigateTo(hwnd, g_navigator->next());
+        break;
+    case VK_OEM_4:
+        DoRotateCCW(hwnd);
+        break;
+    case VK_OEM_6:
+        DoRotateCW(hwnd);
+        break;
+    case VK_DELETE:
+        DoDelete(hwnd);
+        break;
+    }
+    return 0;
+}
+
+// ─── WM_LBUTTONDOWN sub-handlers ─────────────────────────────────────────────
+
+static bool LBDown_CropDialog(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showCropDialog) return false;
+    if (g_renderer && g_renderer->IsCropDlgVisible())
+    {
+        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        for (int i = 0; i < 5; ++i)
+            if (inR(mx, my, g_renderer->GetCropDlgRatioRect(i)))
+            {
+                g_viewState.cropDlgPressedBtn = i + 1;
+                SetCapture(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return true;
+            }
+        if (inR(mx, my, g_renderer->GetCropDlgCancelRect()))
+        {
+            g_viewState.cropDlgPressedBtn = 6;
+            SetCapture(hwnd);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
+        if (inR(mx, my, g_renderer->GetCropDlgApplyRect()))
+        {
+            g_viewState.cropDlgPressedBtn = 7;
+            SetCapture(hwnd);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
+        D2D1_RECT_F imgR = g_renderer->GetImageDisplayRect();
+        float imgW = imgR.right - imgR.left;
+        float imgH = imgR.bottom - imgR.top;
+        if (imgW > 0.0f && imgH > 0.0f)
+        {
+            float cx0 = imgR.left + g_viewState.cropX0 * imgW;
+            float cy0 = imgR.top  + g_viewState.cropY0 * imgH;
+            float cx1 = imgR.left + g_viewState.cropX1 * imgW;
+            float cy1 = imgR.top  + g_viewState.cropY1 * imgH;
+            float midX = (cx0 + cx1) * 0.5f;
+            float midY = (cy0 + cy1) * 0.5f;
+            constexpr float kHitR = 12.0f;
+            auto hitHandle = [&](float hx, float hy) {
+                return fabsf(mx - hx) <= kHitR && fabsf(my - hy) <= kHitR;
+            };
+            int handle = 0;
+            if      (hitHandle(cx0, cy0))  handle = 1;
+            else if (hitHandle(cx1, cy0))  handle = 2;
+            else if (hitHandle(cx0, cy1))  handle = 3;
+            else if (hitHandle(cx1, cy1))  handle = 4;
+            else if (hitHandle(midX, cy0)) handle = 5;
+            else if (hitHandle(midX, cy1)) handle = 6;
+            else if (hitHandle(cx0, midY)) handle = 7;
+            else if (hitHandle(cx1, midY)) handle = 8;
+            else if (mx > cx0 && mx < cx1 && my > cy0 && my < cy1) handle = 9;
+            if (handle != 0)
+            {
+                g_cropDragging      = true;
+                g_cropDragHandle    = handle;
+                g_cropDragAnchorX   = mx;
+                g_cropDragAnchorY   = my;
+                g_cropDragSavedX0   = g_viewState.cropX0;
+                g_cropDragSavedY0   = g_viewState.cropY0;
+                g_cropDragSavedX1   = g_viewState.cropX1;
+                g_cropDragSavedY1   = g_viewState.cropY1;
+                SetCapture(hwnd);
+                return true;
+            }
+        }
+    }
+    return true;
+}
+
+static bool LBDown_RotateFreeDlg(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showRotateFreeDialog) return false;
+    if (g_renderer && g_renderer->IsRotFreeDlgVisible())
+    {
+        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        if (inR(mx, my, g_renderer->GetRotFreeDlgSliderRect()))
+        {
+            g_rotFreeDlgSliderDragging = true;
+            SetCapture(hwnd);
+            D2D1_RECT_F sr = g_renderer->GetRotFreeDlgSliderRect();
+            float railLeft  = sr.left  + 9.0f;
+            float railRight = sr.right  - 9.0f;
+            float t = (mx - railLeft) / (railRight - railLeft);
+            float angle = t * 90.0f - 45.0f;
+            if (angle < -45.0f) angle = -45.0f;
+            if (angle >  45.0f) angle =  45.0f;
+            g_viewState.rotateFreeAngle = angle;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        else
+        {
+            int hit = 0;
+            if      (inR(mx, my, g_renderer->GetRotFreeDlgCoarseDecRect())) hit = 1;
+            else if (inR(mx, my, g_renderer->GetRotFreeDlgFineDecRect()))   hit = 2;
+            else if (inR(mx, my, g_renderer->GetRotFreeDlgFineIncRect()))   hit = 3;
+            else if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseIncRect())) hit = 4;
+            else if (inR(mx, my, g_renderer->GetRotFreeDlgResetRect()))     hit = 5;
+            else if (inR(mx, my, g_renderer->GetRotFreeDlgCancelRect()))    hit = 6;
+            else if (inR(mx, my, g_renderer->GetRotFreeDlgApplyRect()))     hit = 7;
+            g_viewState.rotateFreeDlgPressBtn = hit;
+            SetCapture(hwnd);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    return true;
+}
+
+static bool LBDown_ResizeDlg(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showResizeDialog) return false;
+    if (g_renderer && g_renderer->IsResizeDialogVisible())
+    {
+        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        int hit = 0;
+        if      (inR(mx, my, g_renderer->GetResizeDlgCancelRect()))  hit = 1;
+        else if (inR(mx, my, g_renderer->GetResizeDlgApplyRect()))   hit = 2;
+        else if (inR(mx, my, g_renderer->GetResizeDlgModePxRect()))  hit = 3;
+        else if (inR(mx, my, g_renderer->GetResizeDlgModePctRect())) hit = 4;
+        else if (inR(mx, my, g_renderer->GetResizeDlgWDecRect()))    hit = 5;
+        else if (inR(mx, my, g_renderer->GetResizeDlgWIncRect()))    hit = 6;
+        else if (inR(mx, my, g_renderer->GetResizeDlgHDecRect()))    hit = 7;
+        else if (inR(mx, my, g_renderer->GetResizeDlgHIncRect()))    hit = 8;
+        else if (inR(mx, my, g_renderer->GetResizeDlgLockRect()))    hit = 9;
+        g_viewState.resizeDlgPressedBtn = hit;
+        SetCapture(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    return true;
+}
+
+static bool LBDown_DeleteDlg(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showDeleteConfirmDialog && !g_viewState.showUnsavedWarningDialog)
+        return false;
+    if (g_renderer && g_renderer->IsDeleteDialogVisible())
+    {
+        auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        if (!g_viewState.showUnsavedWarningDialog &&
+            inRect(mx, my, g_renderer->GetDlgCancelRect()))
+            g_viewState.deleteDlgPressedBtn = 1;
+        else if (inRect(mx, my, g_renderer->GetDlgDeleteRect()))
+            g_viewState.deleteDlgPressedBtn = 2;
+        else
+            g_viewState.deleteDlgPressedBtn = 0;
+        SetCapture(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    return true;
+}
+
+static void LBDown_MainArea(HWND hwnd, float mx, float my)
+{
+    g_mouseDownX = mx;
+    g_mouseDownY = my;
+    SetCapture(hwnd);
+    ResetIndexIdleTimer(hwnd);
+
+    g_clickIsInfoButton = HitTestInfoButton(hwnd, mx, my, g_viewState.panelAnimWidth);
+    g_clickIsDeleteBtn  = false;
+    if (!g_clickIsInfoButton && g_renderer && g_renderer->IsDeleteBtnVisible())
+    {
+        D2D1_RECT_F dr = g_renderer->GetDeleteBtnRect();
+        g_clickIsDeleteBtn = (mx >= dr.left && mx <= dr.right && my >= dr.top && my <= dr.bottom);
+    }
+    if (g_clickIsInfoButton)
+    {
+        g_viewState.infoBtnPressed = true;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    else if (g_clickIsDeleteBtn)
+    {
+        g_viewState.deleteBtnPressed = true;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    if (g_clickIsInfoButton || g_clickIsDeleteBtn) return;
+
+    if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
+    {
+        auto inR2 = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        D2D1_RECT_F rL    = g_renderer->GetEditBtnRotLRect();
+        D2D1_RECT_F rR    = g_renderer->GetEditBtnRotRRect();
+        D2D1_RECT_F rMore = g_renderer->GetEditBtnMoreRect();
+        D2D1_RECT_F rFr   = g_renderer->GetEditBtnRotFreeRect();
+        D2D1_RECT_F rRz   = g_renderer->GetEditBtnResizeRect();
+        D2D1_RECT_F rCr   = g_renderer->GetEditBtnCropRect();
+        bool hitL    = inR2(mx, my, rL);
+        bool hitR    = inR2(mx, my, rR);
+        bool hitMore = inR2(mx, my, rMore);
+        bool hitFr   = inR2(mx, my, rFr);
+        bool hitRz   = inR2(mx, my, rRz);
+        bool hitCr   = inR2(mx, my, rCr);
+        if (hitL || hitR || hitMore || hitFr || hitRz || hitCr)
+        {
+            g_clickInToolbar = true;
+            g_viewState.editBtnRotLPressed    = hitL;
+            g_viewState.editBtnRotRPressed    = hitR;
+            g_viewState.editBtnMorePressed    = hitMore;
+            g_viewState.editBtnRotFreePressed = hitFr;
+            g_viewState.editBtnResizePressed  = hitRz;
+            g_viewState.editBtnCropPressed    = hitCr;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    if (g_renderer && g_renderer->IsSaveBarVisible() && g_viewState.editDirty)
+    {
+        D2D1_RECT_F rSave    = g_renderer->GetSaveBarSaveRect();
+        D2D1_RECT_F rDiscard = g_renderer->GetSaveBarDiscardRect();
+        D2D1_RECT_F rSaveAs  = g_renderer->GetSaveBarSaveAsRect();
+        bool hitSave    = (mx >= rSave.left    && mx <= rSave.right    && my >= rSave.top    && my <= rSave.bottom);
+        bool hitDiscard = (mx >= rDiscard.left && mx <= rDiscard.right && my >= rDiscard.top && my <= rDiscard.bottom);
+        bool hitSaveAs  = (mx >= rSaveAs.left  && mx <= rSaveAs.right  && my >= rSaveAs.top  && my <= rSaveAs.bottom);
+        if (hitSave || hitDiscard || hitSaveAs)
+        {
+            g_clickInSaveBar = true;
+            g_viewState.saveBarPressedBtn = hitSave ? 1 : (hitDiscard ? 2 : 3);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    if (g_renderer && g_renderer->IsStripToggleVisible())
+    {
+        D2D1_RECT_F tr = g_renderer->GetStripToggleRect();
+        if (mx >= tr.left && mx <= tr.right && my >= tr.top && my <= tr.bottom)
+        {
+            g_viewState.toggleBtnPressed = true;
+            g_clickInStrip = true;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    if (g_viewState.stripAnimHeight > 0.0f)
+    {
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        if (my >= static_cast<float>(rc.bottom) - g_viewState.stripAnimHeight)
+        {
+            g_clickInStrip = true;
+            return;
+        }
+    }
+
+    if (g_viewState.panelAnimWidth > 0.0f)
+    {
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        if (mx >= static_cast<float>(rc.right) - g_viewState.panelAnimWidth)
+        {
+            if (g_renderer && g_renderer->IsLocationConsentVisible())
+            {
+                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                };
+                if      (inR(mx, my, g_renderer->GetLocationYesRect())) g_viewState.locationConsentPress = 1;
+                else if (inR(mx, my, g_renderer->GetLocationNoRect()))  g_viewState.locationConsentPress = 2;
+                if (g_viewState.locationConsentPress != 0)
+                    InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            g_clickInPanel = true;
+            return;
+        }
+    }
+
+    ArrowZone zone = (g_viewState.imageTotal > 0)
+                     ? HitTestArrow(hwnd, mx, my, g_viewState.panelAnimWidth)
+                     : ArrowZone::None;
+    g_mouseInArrowZone = (zone != ArrowZone::None);
+    g_clickIsLeft      = (zone == ArrowZone::Left);
+    g_viewState.leftArrowPressed  = (zone == ArrowZone::Left);
+    g_viewState.rightArrowPressed = (zone == ArrowZone::Right);
+    if (g_viewState.leftArrowPressed || g_viewState.rightArrowPressed)
+        InvalidateRect(hwnd, nullptr, FALSE);
+
+    g_dragging        = true;
+    g_dragStartX      = mx;
+    g_dragStartY      = my;
+    g_panAtDragStartX = g_viewState.panX;
+    g_panAtDragStartY = g_viewState.panY;
+}
+
+static LRESULT On_WM_LBUTTONDOWN(HWND hwnd, LPARAM lParam)
+{
+    float mx = static_cast<float>(GET_X_LPARAM(lParam));
+    float my = static_cast<float>(GET_Y_LPARAM(lParam));
+    if (LBDown_CropDialog(hwnd, mx, my))    return 0;
+    if (LBDown_RotateFreeDlg(hwnd, mx, my)) return 0;
+    if (LBDown_ResizeDlg(hwnd, mx, my))     return 0;
+    if (LBDown_DeleteDlg(hwnd, mx, my))     return 0;
+    LBDown_MainArea(hwnd, mx, my);
+    return 0;
+}
+
+// ─── WM_MOUSEMOVE sub-handlers ───────────────────────────────────────────────
+
+static bool MouseMove_CropDialog(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showCropDialog) return false;
+    if (g_cropDragging && g_renderer)
+    {
+        D2D1_RECT_F imgR = g_renderer->GetImageDisplayRect();
+        float imgW = imgR.right - imgR.left;
+        float imgH = imgR.bottom - imgR.top;
+        if (imgW > 0.0f && imgH > 0.0f)
+        {
+            float ndx = (mx - g_cropDragAnchorX) / imgW;
+            float ndy = (my - g_cropDragAnchorY) / imgH;
+            constexpr float kMinSize = 0.03f;
+            float x0 = g_cropDragSavedX0, y0 = g_cropDragSavedY0;
+            float x1 = g_cropDragSavedX1, y1 = g_cropDragSavedY1;
+            switch (g_cropDragHandle) {
+            case 1: x0 = x0 + ndx; y0 = y0 + ndy; break;
+            case 2: x1 = x1 + ndx; y0 = y0 + ndy; break;
+            case 3: x0 = x0 + ndx; y1 = y1 + ndy; break;
+            case 4: x1 = x1 + ndx; y1 = y1 + ndy; break;
+            case 5: y0 = y0 + ndy; break;
+            case 6: y1 = y1 + ndy; break;
+            case 7: x0 = x0 + ndx; break;
+            case 8: x1 = x1 + ndx; break;
+            case 9:
+            {
+                float w = x1 - x0, h = y1 - y0;
+                x0 = x0 + ndx; x1 = x0 + w;
+                y0 = y0 + ndy; y1 = y0 + h;
+                if (x0 < 0.0f) { x0 = 0.0f; x1 = w; }
+                if (x1 > 1.0f) { x1 = 1.0f; x0 = 1.0f - w; }
+                if (y0 < 0.0f) { y0 = 0.0f; y1 = h; }
+                if (y1 > 1.0f) { y1 = 1.0f; y0 = 1.0f - h; }
+                break;
+            }
+            }
+            if (g_cropDragHandle != 9)
+            {
+                x0 = max(0.0f, min(x0, 1.0f));
+                y0 = max(0.0f, min(y0, 1.0f));
+                x1 = max(0.0f, min(x1, 1.0f));
+                y1 = max(0.0f, min(y1, 1.0f));
+                if (x1 < x0 + kMinSize) {
+                    if (g_cropDragHandle == 1 || g_cropDragHandle == 3 || g_cropDragHandle == 7)
+                        x0 = x1 - kMinSize;
+                    else
+                        x1 = x0 + kMinSize;
+                }
+                if (y1 < y0 + kMinSize) {
+                    if (g_cropDragHandle == 1 || g_cropDragHandle == 2 || g_cropDragHandle == 5)
+                        y0 = y1 - kMinSize;
+                    else
+                        y1 = y0 + kMinSize;
+                }
+            }
+            g_viewState.cropX0 = x0; g_viewState.cropY0 = y0;
+            g_viewState.cropX1 = x1; g_viewState.cropY1 = y1;
+            if (g_viewState.cropAspectMode != 0)
+                ApplyCropAspectConstraintDrag(imgW, imgH, g_cropDragHandle);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    else if (g_renderer && g_renderer->IsCropDlgVisible())
+    {
+        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        int newHover = 0;
+        for (int i = 0; i < 5; ++i)
+            if (inR(mx, my, g_renderer->GetCropDlgRatioRect(i))) { newHover = i + 1; break; }
+        if (!newHover && inR(mx, my, g_renderer->GetCropDlgCancelRect())) newHover = 6;
+        if (!newHover && inR(mx, my, g_renderer->GetCropDlgApplyRect()))  newHover = 7;
+        if (newHover != g_viewState.cropDlgHoverBtn)
+        {
+            g_viewState.cropDlgHoverBtn = newHover;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    return true;
+}
+
+static bool MouseMove_RotateFreeDlg(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showRotateFreeDialog) return false;
+    if (g_rotFreeDlgSliderDragging && g_renderer && g_renderer->IsRotFreeDlgVisible())
+    {
+        D2D1_RECT_F sr = g_renderer->GetRotFreeDlgSliderRect();
+        float railLeft  = sr.left  + 9.0f;
+        float railRight = sr.right  - 9.0f;
+        float t = (mx - railLeft) / (railRight - railLeft);
+        float angle = t * 90.0f - 45.0f;
+        if (angle < -45.0f) angle = -45.0f;
+        if (angle >  45.0f) angle =  45.0f;
+        if (fabsf(angle - g_viewState.rotateFreeAngle) > 0.05f)
+        {
+            g_viewState.rotateFreeAngle = angle;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    else if (g_renderer && g_renderer->IsRotFreeDlgVisible())
+    {
+        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        int newHover = 0;
+        if      (inR(mx, my, g_renderer->GetRotFreeDlgCoarseDecRect())) newHover = 1;
+        else if (inR(mx, my, g_renderer->GetRotFreeDlgFineDecRect()))   newHover = 2;
+        else if (inR(mx, my, g_renderer->GetRotFreeDlgFineIncRect()))   newHover = 3;
+        else if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseIncRect())) newHover = 4;
+        else if (inR(mx, my, g_renderer->GetRotFreeDlgResetRect()))     newHover = 5;
+        else if (inR(mx, my, g_renderer->GetRotFreeDlgCancelRect()))    newHover = 6;
+        else if (inR(mx, my, g_renderer->GetRotFreeDlgApplyRect()))     newHover = 7;
+        if (newHover != g_viewState.rotateFreeDlgHoverBtn)
+        {
+            g_viewState.rotateFreeDlgHoverBtn = newHover;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    return true;
+}
+
+static bool MouseMove_ResizeDlg(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showResizeDialog) return false;
+    if (g_renderer && g_renderer->IsResizeDialogVisible())
+    {
+        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        int newHover = 0;
+        if      (inR(mx, my, g_renderer->GetResizeDlgCancelRect()))  newHover = 1;
+        else if (inR(mx, my, g_renderer->GetResizeDlgApplyRect()))   newHover = 2;
+        else if (inR(mx, my, g_renderer->GetResizeDlgModePxRect()))  newHover = 3;
+        else if (inR(mx, my, g_renderer->GetResizeDlgModePctRect())) newHover = 4;
+        else if (inR(mx, my, g_renderer->GetResizeDlgWDecRect()))    newHover = 5;
+        else if (inR(mx, my, g_renderer->GetResizeDlgWIncRect()))    newHover = 6;
+        else if (inR(mx, my, g_renderer->GetResizeDlgHDecRect()))    newHover = 7;
+        else if (inR(mx, my, g_renderer->GetResizeDlgHIncRect()))    newHover = 8;
+        else if (inR(mx, my, g_renderer->GetResizeDlgLockRect()))    newHover = 9;
+        if (newHover != g_viewState.resizeDlgHoverBtn)
+        {
+            g_viewState.resizeDlgHoverBtn = newHover;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    return true;
+}
+
+static bool MouseMove_DeleteDlg(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showDeleteConfirmDialog && !g_viewState.showUnsavedWarningDialog)
+        return false;
+    if (g_renderer && g_renderer->IsDeleteDialogVisible())
+    {
+        auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        int newHover = 0;
+        if (!g_viewState.showUnsavedWarningDialog &&
+            inRect(mx, my, g_renderer->GetDlgCancelRect()))
+            newHover = 1;
+        else if (inRect(mx, my, g_renderer->GetDlgDeleteRect()))
+            newHover = 2;
+        if (newHover != g_viewState.deleteDlgHoverBtn)
+        {
+            g_viewState.deleteDlgHoverBtn = newHover;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    return true;
+}
+
+static void MouseMove_Idle(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.editIsAnimated && !g_edit.pixels.empty())
+    {
+        if (!g_mouseTracking)
+        {
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+            TrackMouseEvent(&tme);
+            g_mouseTracking = true;
+        }
+        if (!g_viewState.editDirty)
+        {
+            KillTimer(hwnd, kEditToolbarFadeTimerID);
+            KillTimer(hwnd, kEditToolbarIdleTimerID);
+            SetTimer(hwnd, kEditToolbarIdleTimerID, 2000, nullptr);
+        }
+        if (g_viewState.editToolbarAlpha < 1.0f)
+        {
+            g_viewState.editToolbarAlpha = 1.0f;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+
+    if (g_renderer && g_renderer->IsEditToolbarVisible()
+        && !g_viewState.showCropDialog && !g_viewState.showResizeDialog && !g_viewState.showRotateFreeDialog)
+    {
+        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        int newHov = 0;
+        if      (inR(mx, my, g_renderer->GetEditBtnRotLRect()))    newHov = 1;
+        else if (inR(mx, my, g_renderer->GetEditBtnRotRRect()))    newHov = 2;
+        else if (inR(mx, my, g_renderer->GetEditBtnMoreRect()))    newHov = 3;
+        else if (inR(mx, my, g_renderer->GetEditBtnRotFreeRect())) newHov = 4;
+        else if (inR(mx, my, g_renderer->GetEditBtnResizeRect()))  newHov = 5;
+        else if (inR(mx, my, g_renderer->GetEditBtnCropRect()))    newHov = 6;
+        if (newHov != g_viewState.editToolbarHoverBtn)
+        {
+            g_viewState.editToolbarHoverBtn    = newHov;
+            g_viewState.editToolbarTooltipAlpha = 0.0f;
+            KillTimer(hwnd, kTooltipFadeTimerID);
+            if (newHov != 0)
+                SetTimer(hwnd, kTooltipDelayTimerID, 500, nullptr);
+            else
+                KillTimer(hwnd, kTooltipDelayTimerID);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    else if (g_viewState.editToolbarHoverBtn != 0)
+    {
+        g_viewState.editToolbarHoverBtn    = 0;
+        g_viewState.editToolbarTooltipAlpha = 0.0f;
+        KillTimer(hwnd, kTooltipDelayTimerID);
+        KillTimer(hwnd, kTooltipFadeTimerID);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+
+    if (g_renderer && g_renderer->IsLocationConsentVisible())
+    {
+        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        int newHover = 0;
+        if      (inR(mx, my, g_renderer->GetLocationYesRect())) newHover = 1;
+        else if (inR(mx, my, g_renderer->GetLocationNoRect()))  newHover = 2;
+        if (newHover != g_viewState.locationConsentHover)
+        {
+            g_viewState.locationConsentHover = newHover;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    else if (g_viewState.locationConsentHover != 0)
+    {
+        g_viewState.locationConsentHover = 0;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+
+    if (g_renderer && g_renderer->IsSaveBarVisible())
+    {
+        if (!g_mouseTracking)
+        {
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+            TrackMouseEvent(&tme);
+            g_mouseTracking = true;
+        }
+        auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        int newHover = 0;
+        if      (inRect(mx, my, g_renderer->GetSaveBarSaveRect()))    newHover = 1;
+        else if (inRect(mx, my, g_renderer->GetSaveBarDiscardRect())) newHover = 2;
+        else if (inRect(mx, my, g_renderer->GetSaveBarSaveAsRect()))  newHover = 3;
+        if (newHover != g_viewState.saveBarHover)
+        {
+            g_viewState.saveBarHover = newHover;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    else if (g_viewState.saveBarHover != 0)
+    {
+        g_viewState.saveBarHover = 0;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+
+    if (!g_dragging) return;
+    float nx = g_panAtDragStartX + (mx - g_dragStartX);
+    float ny = g_panAtDragStartY + (my - g_dragStartY);
+    g_viewState.panX = g_viewState.panXTarget = nx;
+    g_viewState.panY = g_viewState.panYTarget = ny;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static LRESULT On_WM_MOUSEMOVE(HWND hwnd, LPARAM lParam)
+{
+    float mx = static_cast<float>(GET_X_LPARAM(lParam));
+    float my = static_cast<float>(GET_Y_LPARAM(lParam));
+    if (MouseMove_CropDialog(hwnd, mx, my))    return 0;
+    if (MouseMove_RotateFreeDlg(hwnd, mx, my)) return 0;
+    if (MouseMove_ResizeDlg(hwnd, mx, my))     return 0;
+    if (MouseMove_DeleteDlg(hwnd, mx, my))     return 0;
+    MouseMove_Idle(hwnd, mx, my);
+    return 0;
+}
+
+// ─── WM_LBUTTONUP sub-handlers ───────────────────────────────────────────────
+
+static LRESULT LBUp_CropDialog(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showCropDialog) return -1;
+    if (g_cropDragging)
+    {
+        g_cropDragging = false;
+        g_cropDragHandle = 0;
+        ReleaseCapture();
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+    int pressed = g_viewState.cropDlgPressedBtn;
+    g_viewState.cropDlgPressedBtn = 0;
+    ReleaseCapture();
+    if (g_renderer && g_renderer->IsCropDlgVisible() && pressed != 0)
+    {
+        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        if (pressed >= 1 && pressed <= 5)
+        {
+            if (inR(mx, my, g_renderer->GetCropDlgRatioRect(pressed - 1)))
+            {
+                g_viewState.cropAspectMode = pressed - 1;
+                if (g_viewState.cropAspectMode != 0)
+                {
+                    D2D1_RECT_F imgR = g_renderer->GetImageDisplayRect();
+                    float imgW = imgR.right - imgR.left;
+                    float imgH = imgR.bottom - imgR.top;
+                    if (imgW > 0.0f && imgH > 0.0f)
+                        ApplyCropAspectConstraint(imgW, imgH);
+                }
+            }
+        }
+        else if (pressed == 6)
+        {
+            if (inR(mx, my, g_renderer->GetCropDlgCancelRect()))
+            {
+                g_viewState.showCropDialog    = false;
+                g_viewState.cropDlgHoverBtn   = 0;
+                g_viewState.cropDlgPressedBtn = 0;
+            }
+        }
+        else if (pressed == 7)
+        {
+            if (inR(mx, my, g_renderer->GetCropDlgApplyRect()))
+                DoApplyCrop(hwnd);
+        }
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return 0;
+}
+
+static LRESULT LBUp_RotateFreeDlg(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showRotateFreeDialog) return -1;
+    if (g_rotFreeDlgSliderDragging)
+    {
+        g_rotFreeDlgSliderDragging = false;
+        ReleaseCapture();
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+    int pressed = g_viewState.rotateFreeDlgPressBtn;
+    g_viewState.rotateFreeDlgPressBtn = 0;
+    ReleaseCapture();
+    if (g_renderer && g_renderer->IsRotFreeDlgVisible() && pressed != 0)
+    {
+        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        auto clampAngle = [](float a) {
+            return a < -45.0f ? -45.0f : (a > 45.0f ? 45.0f : a);
+        };
+        switch (pressed)
+        {
+        case 1:
+            if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseDecRect()))
+                g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle - 1.0f);
+            break;
+        case 2:
+            if (inR(mx, my, g_renderer->GetRotFreeDlgFineDecRect()))
+                g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle - 0.1f);
+            break;
+        case 3:
+            if (inR(mx, my, g_renderer->GetRotFreeDlgFineIncRect()))
+                g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle + 0.1f);
+            break;
+        case 4:
+            if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseIncRect()))
+                g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle + 1.0f);
+            break;
+        case 5:
+            if (inR(mx, my, g_renderer->GetRotFreeDlgResetRect()))
+                g_viewState.rotateFreeAngle = 0.0f;
+            break;
+        case 6:
+            g_viewState.showRotateFreeDialog  = false;
+            g_viewState.rotateFreeDlgHoverBtn = 0;
+            break;
+        case 7:
+            if (inR(mx, my, g_renderer->GetRotFreeDlgApplyRect()))
+                DoApplyRotateFree(hwnd);
+            break;
+        }
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return 0;
+}
+
+static LRESULT LBUp_ResizeDlg(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showResizeDialog) return -1;
+    int pressed = g_viewState.resizeDlgPressedBtn;
+    g_viewState.resizeDlgPressedBtn = 0;
+    ReleaseCapture();
+    if (g_renderer && g_renderer->IsResizeDialogVisible() && pressed != 0)
+    {
+        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        switch (pressed)
+        {
+        case 1:
+            g_viewState.showResizeDialog  = false;
+            g_viewState.resizeDlgHoverBtn = 0;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
+        case 2:
+            if (inR(mx, my, g_renderer->GetResizeDlgApplyRect()))
+                DoResizeConfirmed(hwnd);
+            else
+                InvalidateRect(hwnd, nullptr, FALSE);
+            break;
+        case 3:
+            if (inR(mx, my, g_renderer->GetResizeDlgModePxRect()) && g_viewState.resizeMode != 0)
+            {
+                g_viewState.resizeMode = 0;
+                g_viewState.resizeW = g_viewState.resizeOrigW;
+                g_viewState.resizeH = g_viewState.resizeOrigH;
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
+        case 4:
+            if (inR(mx, my, g_renderer->GetResizeDlgModePctRect()) && g_viewState.resizeMode != 1)
+            {
+                g_viewState.resizeMode = 1;
+                g_viewState.resizePct  = 100;
+                g_viewState.resizeW    = g_viewState.resizeOrigW;
+                g_viewState.resizeH    = g_viewState.resizeOrigH;
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
+        case 9:
+            if (inR(mx, my, g_renderer->GetResizeDlgLockRect()))
+            {
+                g_viewState.resizeLockAspect = !g_viewState.resizeLockAspect;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            break;
+        default:
+        {
+            bool stillOn = false;
+            if      (pressed == 5 && inR(mx, my, g_renderer->GetResizeDlgWDecRect())) stillOn = true;
+            else if (pressed == 6 && inR(mx, my, g_renderer->GetResizeDlgWIncRect())) stillOn = true;
+            else if (pressed == 7 && inR(mx, my, g_renderer->GetResizeDlgHDecRect())) stillOn = true;
+            else if (pressed == 8 && inR(mx, my, g_renderer->GetResizeDlgHIncRect())) stillOn = true;
+            if (stillOn) ResizeDlgAdjust(hwnd, pressed);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
+        }
+        }
+    }
+    else
+        InvalidateRect(hwnd, nullptr, FALSE);
+    return 0;
+}
+
+static LRESULT LBUp_DeleteDlg(HWND hwnd, float mx, float my)
+{
+    if (!g_viewState.showDeleteConfirmDialog && !g_viewState.showUnsavedWarningDialog)
+        return -1;
+    int pressed = g_viewState.deleteDlgPressedBtn;
+    g_viewState.deleteDlgPressedBtn = 0;
+    ReleaseCapture();
+    if (g_renderer && g_renderer->IsDeleteDialogVisible() && pressed != 0)
+    {
+        auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        };
+        bool hitCancel = !g_viewState.showUnsavedWarningDialog &&
+                          inRect(mx, my, g_renderer->GetDlgCancelRect());
+        bool hitDelete = inRect(mx, my, g_renderer->GetDlgDeleteRect());
+        if (g_viewState.showUnsavedWarningDialog)
+        {
+            if (hitDelete)
+            {
+                g_viewState.showUnsavedWarningDialog = false;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+        }
+        else
+        {
+            if (hitCancel && pressed == 1)
+            {
+                g_viewState.showDeleteConfirmDialog = false;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            else if (hitDelete && pressed == 2)
+            {
+                g_viewState.showDeleteConfirmDialog = false;
+                g_viewState.deleteDlgHoverBtn = 0;
+                DoDeleteConfirmed(hwnd);
+            }
+            else
+                InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    else
+        InvalidateRect(hwnd, nullptr, FALSE);
+    return 0;
+}
+
+static LRESULT LBUp_EditToolbar(HWND hwnd, float mx, float my)
+{
+    if (!g_clickInToolbar) return -1;
+    bool wasL    = g_viewState.editBtnRotLPressed;
+    bool wasR    = g_viewState.editBtnRotRPressed;
+    bool wasMore = g_viewState.editBtnMorePressed;
+    bool wasFr   = g_viewState.editBtnRotFreePressed;
+    bool wasRz   = g_viewState.editBtnResizePressed;
+    bool wasCr   = g_viewState.editBtnCropPressed;
+    g_viewState.editBtnRotLPressed    = false;
+    g_viewState.editBtnRotRPressed    = false;
+    g_viewState.editBtnMorePressed    = false;
+    g_viewState.editBtnRotFreePressed = false;
+    g_viewState.editBtnResizePressed  = false;
+    g_viewState.editBtnCropPressed    = false;
+    g_clickInToolbar = false;
+    float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
+    if (delta < 5.0f)
+    {
+        if (wasL)        DoRotateCCW(hwnd);
+        else if (wasR)   DoRotateCW(hwnd);
+        else if (wasMore)
+        {
+            g_viewState.editMoreExpanded = !g_viewState.editMoreExpanded;
+            QueryPerformanceCounter(&g_editMoreFadeLastTime);
+            KillTimer(hwnd, kEditMoreFadeTimerID);
+            SetTimer(hwnd, kEditMoreFadeTimerID, kAnimIntervalMs, nullptr);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        else if (wasFr)  DoOpenRotateFreeDialog(hwnd);
+        else if (wasRz)  DoOpenResizeDialog(hwnd);
+        else if (wasCr)  DoOpenCropDialog(hwnd);
+    }
+    else
+        InvalidateRect(hwnd, nullptr, FALSE);
+    return 0;
+}
+
+static LRESULT LBUp_SaveBar(HWND hwnd, float mx, float my)
+{
+    if (!g_clickInSaveBar) return -1;
+    g_clickInSaveBar = false;
+    g_viewState.saveBarPressedBtn = 0;
+    float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
+    if (delta < 5.0f && g_renderer)
+    {
+        D2D1_RECT_F rSave    = g_renderer->GetSaveBarSaveRect();
+        D2D1_RECT_F rDiscard = g_renderer->GetSaveBarDiscardRect();
+        D2D1_RECT_F rSaveAs  = g_renderer->GetSaveBarSaveAsRect();
+        if (mx >= rSave.left && mx <= rSave.right && my >= rSave.top && my <= rSave.bottom)
+            DoSave(hwnd);
+        else if (mx >= rDiscard.left && mx <= rDiscard.right && my >= rDiscard.top && my <= rDiscard.bottom)
+            DoDiscard(hwnd);
+        else if (mx >= rSaveAs.left && mx <= rSaveAs.right && my >= rSaveAs.top && my <= rSaveAs.bottom)
+            DoSaveAs(hwnd);
+    }
+    else
+        InvalidateRect(hwnd, nullptr, FALSE);
+    return 0;
+}
+
+static LRESULT LBUp_Strip(HWND hwnd, float mx, float my)
+{
+    if (!g_clickInStrip) return -1;
+    g_clickInStrip = false;
+    float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
+    if (delta < 5.0f && g_renderer)
+    {
+        if (g_renderer->IsStripToggleVisible())
+        {
+            D2D1_RECT_F tr = g_renderer->GetStripToggleRect();
+            if (mx >= tr.left && mx <= tr.right && my >= tr.top && my <= tr.bottom)
+            {
+                g_viewState.showThumbStrip = !g_viewState.showThumbStrip;
+                SaveSettings();
+                StartStripAnim(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+        }
+        int offset = g_renderer->GetThumbClickOffset(mx, my);
+        if (offset != INT_MIN && offset != 0 && g_navigator && !g_navigator->empty())
+        {
+            const std::wstring& path = g_navigator->jump(offset);
+            NavigateTo(hwnd, path);
+        }
+    }
+    return 0;
+}
+
+static LRESULT LBUp_Panel(HWND hwnd, float mx, float my)
+{
+    if (!g_clickInPanel) return -1;
+    g_clickInPanel = false;
+    float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
+    if (delta < 5.0f && g_renderer)
+    {
+        if (g_renderer->IsDateToggleVisible())
+        {
+            D2D1_RECT_F r = g_renderer->GetDateToggleRect();
+            if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
+            {
+                float midX = (r.left + r.right) * 0.5f;
+                g_viewState.use12HourTime = (mx >= midX);
+                SaveSettings();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+        }
+        if (g_renderer->IsGpsLinkVisible() && g_imageInfo.hasGpsDecimal)
+        {
+            D2D1_RECT_F r = g_renderer->GetGpsLinkRect();
+            if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
+            {
+                wchar_t url[256];
+                swprintf_s(url, L"https://maps.google.com/?q=%.6f,%.6f",
+                           g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+                return 0;
+            }
+        }
+        if (g_renderer->IsMapCopyBtnVisible() && g_imageInfo.hasGpsDecimal)
+        {
+            D2D1_RECT_F r = g_renderer->GetMapCopyBtnRect();
+            if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
+            {
+                wchar_t coordStr[64];
+                swprintf_s(coordStr, L"%.6f, %.6f",
+                           g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                if (OpenClipboard(hwnd))
+                {
+                    EmptyClipboard();
+                    const size_t bytes = (wcslen(coordStr) + 1) * sizeof(wchar_t);
+                    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+                    if (hMem)
+                    {
+                        memcpy(GlobalLock(hMem), coordStr, bytes);
+                        GlobalUnlock(hMem);
+                        SetClipboardData(CF_UNICODETEXT, hMem);
+                    }
+                    CloseClipboard();
+                }
+                g_renderer->MarkCoordsCopied();
+                SetTimer(hwnd, kCopyFeedbackTimerID, 1500, nullptr);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+        }
+        if (g_renderer->IsMapPreviewVisible() && g_imageInfo.hasGpsDecimal)
+        {
+            D2D1_RECT_F r = g_renderer->GetMapPreviewRect();
+            if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
+            {
+                wchar_t url[256];
+                swprintf_s(url, L"https://maps.google.com/?q=%.6f,%.6f",
+                           g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+                return 0;
+            }
+        }
+        if (g_renderer->IsLocationConsentVisible())
+        {
+            int prevPress = g_viewState.locationConsentPress;
+            g_viewState.locationConsentPress = 0;
+            auto inR = [](float x, float y, const D2D1_RECT_F& r) {
+                return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+            };
+            if (inR(mx, my, g_renderer->GetLocationYesRect()))
+            {
+                g_viewState.locationConsent = LocationConsent::Enabled;
+                g_locationConsentAtomic.store(1);
+                SaveSettings();
+                if (g_imageInfo.hasGpsDecimal)
+                {
+                    g_renderer->ClearMapTiles();
+                    StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                    if (g_imageInfo.gpsLocationName.empty())
+                        g_imageInfo.gpsLocationName =
+                            LookupLocationFromCache(g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                    if (g_imageInfo.gpsLocationName.empty())
+                    {
+                        const uint64_t gen = g_decodeGeneration.load();
+                        const double   lat = g_imageInfo.gpsLatDecimal;
+                        const double   lon = g_imageInfo.gpsLonDecimal;
+                        std::thread([hwnd, lat, lon, gen]()
+                        {
+                            auto locName = FetchLocationCached(lat, lon);
+                            if (!locName.empty() && g_decodeGeneration.load() == gen)
+                            {
+                                auto* loc         = new LocationResult{};
+                                loc->locationName = std::move(locName);
+                                loc->generation   = gen;
+                                PostMessage(hwnd, WM_LOCATION_DONE, 0,
+                                            reinterpret_cast<LPARAM>(loc));
+                            }
+                        }).detach();
+                    }
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (inR(mx, my, g_renderer->GetLocationNoRect()))
+            {
+                g_viewState.locationConsent = LocationConsent::Disabled;
+                g_locationConsentAtomic.store(2);
+                SaveSettings();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (prevPress != 0)
+                InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        if (g_renderer->IsLocationToggleVisible())
+        {
+            D2D1_RECT_F r = g_renderer->GetLocationToggleRect();
+            if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
+            {
+                if (g_viewState.locationConsent == LocationConsent::Enabled)
+                {
+                    g_viewState.locationConsent = LocationConsent::Disabled;
+                    g_locationConsentAtomic.store(2);
+                }
+                else if (g_viewState.locationConsent == LocationConsent::Disabled)
+                {
+                    g_viewState.locationConsent = LocationConsent::Enabled;
+                    g_locationConsentAtomic.store(1);
+                    if (g_imageInfo.hasGpsDecimal)
+                    {
+                        g_renderer->ClearMapTiles();
+                        StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                        if (g_imageInfo.gpsLocationName.empty())
+                            g_imageInfo.gpsLocationName =
+                                LookupLocationFromCache(g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+                        if (g_imageInfo.gpsLocationName.empty())
+                        {
+                            const uint64_t gen = g_decodeGeneration.load();
+                            const double   lat = g_imageInfo.gpsLatDecimal;
+                            const double   lon = g_imageInfo.gpsLonDecimal;
+                            std::thread([hwnd, lat, lon, gen]()
+                            {
+                                auto locName = FetchLocationCached(lat, lon);
+                                if (!locName.empty() && g_decodeGeneration.load() == gen)
+                                {
+                                    auto* loc         = new LocationResult{};
+                                    loc->locationName = std::move(locName);
+                                    loc->generation   = gen;
+                                    PostMessage(hwnd, WM_LOCATION_DONE, 0,
+                                                reinterpret_cast<LPARAM>(loc));
+                                }
+                            }).detach();
+                        }
+                    }
+                }
+                SaveSettings();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+
+static LRESULT On_WM_LBUTTONUP(HWND hwnd, LPARAM lParam)
+{
+    float mx = static_cast<float>(GET_X_LPARAM(lParam));
+    float my = static_cast<float>(GET_Y_LPARAM(lParam));
+
+    LRESULT r;
+    if ((r = LBUp_CropDialog(hwnd, mx, my))    != -1) return r;
+    if ((r = LBUp_RotateFreeDlg(hwnd, mx, my)) != -1) return r;
+    if ((r = LBUp_ResizeDlg(hwnd, mx, my))     != -1) return r;
+    if ((r = LBUp_DeleteDlg(hwnd, mx, my))     != -1) return r;
+
+    bool wasDragging = g_dragging;
+    g_dragging = false;
+    ReleaseCapture();
+
+    if ((r = LBUp_EditToolbar(hwnd, mx, my)) != -1) return r;
+    if ((r = LBUp_SaveBar(hwnd, mx, my))     != -1) return r;
+
+    bool needRepaint = g_viewState.infoBtnPressed
+                    || g_viewState.leftArrowPressed
+                    || g_viewState.rightArrowPressed
+                    || g_viewState.toggleBtnPressed;
+    g_viewState.infoBtnPressed    = false;
+    g_viewState.leftArrowPressed  = false;
+    g_viewState.rightArrowPressed = false;
+    g_viewState.toggleBtnPressed  = false;
+    if (needRepaint) InvalidateRect(hwnd, nullptr, FALSE);
+
+    if ((r = LBUp_Strip(hwnd, mx, my))  != -1) return r;
+    if ((r = LBUp_Panel(hwnd, mx, my))  != -1) return r;
+
+    if (g_clickIsDeleteBtn)
+    {
+        g_viewState.deleteBtnPressed = false;
+        float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
+        if (delta < 5.0f)
+            DoDelete(hwnd);
+        else
+            InvalidateRect(hwnd, nullptr, FALSE);
+        g_clickIsDeleteBtn = false;
+        return 0;
+    }
+
+    if (g_clickIsInfoButton)
+    {
+        float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
+        if (delta < 5.0f)
+        {
+            g_viewState.showInfoPanel = !g_viewState.showInfoPanel;
+            SaveSettings();
+            StartPanelAnim(hwnd);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        g_clickIsInfoButton = false;
+        return 0;
+    }
+
+    if (g_mouseInArrowZone && wasDragging && g_navigator && !g_navigator->empty())
+    {
+        float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
+        if (delta < 5.0f)
+        {
+            g_viewState.panX = g_panAtDragStartX;
+            g_viewState.panY = g_panAtDragStartY;
+            const std::wstring& path = g_clickIsLeft
+                ? g_navigator->prev()
+                : g_navigator->next();
+            NavigateTo(hwnd, path);
+        }
+    }
+    g_mouseInArrowZone = false;
+    return 0;
+}
+
+// ─── Remaining message handlers ──────────────────────────────────────────────
+
+static LRESULT On_WM_MOUSEWHEEL(HWND hwnd, WPARAM wParam, LPARAM lParam)
+{
+    int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+    POINT cursor;
+    cursor.x = GET_X_LPARAM(lParam);
+    cursor.y = GET_Y_LPARAM(lParam);
+    ScreenToClient(hwnd, &cursor);
+    float cx = static_cast<float>(cursor.x);
+    float cy = static_cast<float>(cursor.y);
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    float wndW = static_cast<float>(rc.right);
+    float wndH = static_cast<float>(rc.bottom);
+
+    if (g_viewState.panelAnimWidth > 0.0f && cx >= wndW - g_viewState.panelAnimWidth)
+    {
+        constexpr float kScrollStep = 40.0f;
+        g_viewState.panelScrollY += (delta > 0 ? -kScrollStep : kScrollStep);
+        float maxScroll = 0.0f;
+        if (g_renderer)
+        {
+            float visibleH = wndH - PanelLayout::HeaderH - g_viewState.stripAnimHeight;
+            maxScroll = max(0.0f, g_renderer->GetInfoPanelContentHeight() - visibleH);
+        }
+        g_viewState.panelScrollY = max(0.0f, min(maxScroll, g_viewState.panelScrollY));
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+
+    if (g_viewState.stripAnimHeight > 0.0f && g_navigator && !g_navigator->empty())
+    {
+        if (cy >= wndH - g_viewState.stripAnimHeight)
+        {
+            if (delta > 0)
+                NavigateTo(hwnd, g_navigator->next());
+            else
+                NavigateTo(hwnd, g_navigator->prev());
+            return 0;
+        }
+    }
+
+    if (g_viewState.showCropDialog) return 0;
+
+    float newZoom = g_viewState.zoomTarget * (delta > 0 ? 1.15f : (1.0f / 1.15f));
+    ApplyZoom(hwnd, cx, cy, newZoom);
+    ShowZoomIndicator(hwnd);
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return 0;
+}
+
+static LRESULT On_WM_MOUSELEAVE(HWND hwnd)
+{
+    g_mouseTracking = false;
+    if (!g_viewState.editDirty && g_viewState.editToolbarAlpha > 0.0f)
+    {
+        KillTimer(hwnd, kEditToolbarIdleTimerID);
+        QueryPerformanceCounter(&g_editToolbarFadeLastTime);
+        SetTimer(hwnd, kEditToolbarFadeTimerID, kAnimIntervalMs, nullptr);
+    }
+    if (g_viewState.editToolbarHoverBtn != 0 || g_viewState.editToolbarTooltipAlpha > 0.0f)
+    {
+        g_viewState.editToolbarHoverBtn    = 0;
+        g_viewState.editToolbarTooltipAlpha = 0.0f;
+        KillTimer(hwnd, kTooltipDelayTimerID);
+        KillTimer(hwnd, kTooltipFadeTimerID);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    if (g_viewState.saveBarHover != 0 || g_viewState.saveBarPressedBtn != 0)
+    {
+        g_viewState.saveBarHover      = 0;
+        g_viewState.saveBarPressedBtn = 0;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    if (g_viewState.locationConsentHover != 0 || g_viewState.locationConsentPress != 0)
+    {
+        g_viewState.locationConsentHover = 0;
+        g_viewState.locationConsentPress = 0;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    return 0;
+}
+
+static LRESULT On_WM_LBUTTONDBLCLK(HWND hwnd, WPARAM wParam, LPARAM lParam)
+{
+    float cx = static_cast<float>(GET_X_LPARAM(lParam));
+    float cy = static_cast<float>(GET_Y_LPARAM(lParam));
+
+    if (g_viewState.showResizeDialog || g_viewState.showRotateFreeDialog ||
+        g_viewState.showCropDialog   || g_viewState.showDeleteConfirmDialog ||
+        g_viewState.showUnsavedWarningDialog)
+        return SendMessage(hwnd, WM_LBUTTONDOWN, wParam, lParam);
+
+    if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
+    {
+        D2D1_RECT_F rL    = g_renderer->GetEditBtnRotLRect();
+        D2D1_RECT_F rR    = g_renderer->GetEditBtnRotRRect();
+        D2D1_RECT_F rMore = g_renderer->GetEditBtnMoreRect();
+        D2D1_RECT_F rFr   = g_renderer->GetEditBtnRotFreeRect();
+        D2D1_RECT_F rRz   = g_renderer->GetEditBtnResizeRect();
+        D2D1_RECT_F rCr   = g_renderer->GetEditBtnCropRect();
+        if ((cx >= rL.left && cx <= rL.right && cy >= rL.top && cy <= rL.bottom) ||
+            (cx >= rR.left && cx <= rR.right && cy >= rR.top && cy <= rR.bottom))
+        {
+            if (cx >= rL.left && cx <= rL.right && cy >= rL.top && cy <= rL.bottom)
+                DoRotateCCW(hwnd);
+            else
+                DoRotateCW(hwnd);
+            return 0;
+        }
+        if ((cx >= rMore.left && cx <= rMore.right && cy >= rMore.top && cy <= rMore.bottom) ||
+            (cx >= rFr.left   && cx <= rFr.right   && cy >= rFr.top   && cy <= rFr.bottom)   ||
+            (cx >= rRz.left   && cx <= rRz.right   && cy >= rRz.top   && cy <= rRz.bottom)   ||
+            (cx >= rCr.left   && cx <= rCr.right   && cy >= rCr.top   && cy <= rCr.bottom))
+            return SendMessage(hwnd, WM_LBUTTONDOWN, wParam, lParam);
+    }
+
+    if (g_renderer && g_renderer->IsSaveBarVisible() && g_viewState.editDirty)
+    {
+        D2D1_RECT_F rSave    = g_renderer->GetSaveBarSaveRect();
+        D2D1_RECT_F rDiscard = g_renderer->GetSaveBarDiscardRect();
+        D2D1_RECT_F rSaveAs  = g_renderer->GetSaveBarSaveAsRect();
+        if ((cx >= rSave.left    && cx <= rSave.right    && cy >= rSave.top    && cy <= rSave.bottom)    ||
+            (cx >= rDiscard.left && cx <= rDiscard.right && cy >= rDiscard.top && cy <= rDiscard.bottom) ||
+            (cx >= rSaveAs.left  && cx <= rSaveAs.right  && cy >= rSaveAs.top  && cy <= rSaveAs.bottom))
+            return SendMessage(hwnd, WM_LBUTTONDOWN, wParam, lParam);
+    }
+
+    if (HitTestArrow(hwnd, cx, cy, g_viewState.panelAnimWidth) != ArrowZone::None) return 0;
+    if (HitTestInfoButton(hwnd, cx, cy, g_viewState.panelAnimWidth)) return 0;
+
+    if (g_viewState.panelAnimWidth > 0.0f)
+    {
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        if (cx >= static_cast<float>(rc.right) - g_viewState.panelAnimWidth) return 0;
+    }
+
+    if (g_viewState.stripAnimHeight > 0.0f)
+    {
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        if (cy >= static_cast<float>(rc.bottom) - g_viewState.stripAnimHeight) return 0;
+    }
+
+    if (g_renderer && g_renderer->IsStripToggleVisible())
+    {
+        D2D1_RECT_F tr = g_renderer->GetStripToggleRect();
+        if (cx >= tr.left && cx <= tr.right && cy >= tr.top && cy <= tr.bottom) return 0;
+    }
+
+    if (fabsf(g_viewState.zoomFactor - 1.0f) < 0.02f &&
+        fabsf(g_viewState.zoomTarget - 1.0f) < 0.02f)
+    {
+        ApplyZoom(hwnd, cx, cy, 2.5f);
+    }
+    else
+    {
+        g_viewState.zoomTarget = 1.0f;
+        g_viewState.panXTarget = 0.0f;
+        g_viewState.panYTarget = 0.0f;
+        StartZoomAnim(hwnd);
+    }
+    ShowZoomIndicator(hwnd);
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return 0;
+}
+
+static LRESULT On_WM_SAVE_DONE(HWND hwnd, LPARAM lParam)
+{
+    auto* r = reinterpret_cast<SaveDoneResult*>(lParam);
+    g_isSaving.store(false);
+    if (r->success)
+    {
+        if (r->isSaveAs) {
+            g_edit.filePath = r->savedPath;
+            g_edit.format   = r->format;
+        }
+        g_edit.isDirty        = false;
+        g_viewState.editDirty = false;
+        g_viewState.saveBarAlpha = 0.0f;
+        KillTimer(hwnd, kSaveBarFadeTimerID);
+        g_viewState.editToolbarAlpha = 1.0f;
+        KillTimer(hwnd, kEditToolbarFadeTimerID);
+        KillTimer(hwnd, kEditToolbarIdleTimerID);
+        SetTimer(hwnd, kEditToolbarIdleTimerID, 2000, nullptr);
+        {
+            std::lock_guard<std::mutex> lk(g_metaCacheMutex);
+            g_metaCache.erase(r->savedPath);
+            if (r->isSaveAs && r->origPath != r->savedPath)
+                g_metaCache.erase(r->origPath);
+            ImageInfo updatedMeta = g_imageInfo;
+            updatedMeta.format    = r->format;
+            g_metaCache[r->savedPath] = std::move(updatedMeta);
+        }
+        {
+            std::lock_guard<std::mutex> lk(g_cacheMutex);
+            g_decodeCache.erase(r->savedPath);
+            if (r->isSaveAs && r->origPath != r->savedPath)
+                g_decodeCache.erase(r->origPath);
+            if (!g_edit.pixels.empty() && g_edit.width > 0 && g_edit.height > 0)
+            {
+                if (g_decodeCache.size() >= kCacheMaxSize)
+                {
+                    auto oldest = g_decodeCache.begin();
+                    delete oldest->second;
+                    g_decodeCache.erase(oldest);
+                }
+                auto* cached        = new DecodeResult();
+                cached->path        = r->savedPath;
+                cached->pixels      = g_edit.pixels;
+                cached->width       = g_edit.width;
+                cached->height      = g_edit.height;
+                cached->info        = g_imageInfo;
+                cached->info.format = r->format;
+                g_decodeCache[r->savedPath] = cached;
+            }
+        }
+        if (g_renderer && !g_edit.pixels.empty() && g_edit.width > 0 && g_edit.height > 0)
+        {
+            constexpr UINT kTargetH = static_cast<UINT>(StripLayout::ThumbH);
+            const float aspect = static_cast<float>(g_edit.width) / static_cast<float>(g_edit.height);
+            const UINT  thumbH = kTargetH;
+            const UINT  thumbW = max(1u, static_cast<UINT>(thumbH * aspect));
+            std::vector<uint8_t> tp(static_cast<size_t>(thumbW) * thumbH * 4);
+            for (UINT dy = 0; dy < thumbH; ++dy)
+                for (UINT dx = 0; dx < thumbW; ++dx)
+                {
+                    UINT sy = dy * g_edit.height / thumbH;
+                    UINT sx = dx * g_edit.width  / thumbW;
+                    const uint8_t* s = &g_edit.pixels[(static_cast<size_t>(sy) * g_edit.width + sx) * 4];
+                    uint8_t*       d = &tp[(static_cast<size_t>(dy) * thumbW + dx) * 4];
+                    d[0]=s[0]; d[1]=s[1]; d[2]=s[2]; d[3]=s[3];
+                }
+            g_renderer->LoadThumbnail(r->savedPath, tp.data(), thumbW, thumbH);
+        }
+    }
+    delete r;
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return 0;
+}
+
+static LRESULT On_WM_DECODE_DONE(HWND hwnd, LPARAM lParam)
+{
+    auto* result = reinterpret_cast<DecodeResult*>(lParam);
+    if (result->generation == g_decodeGeneration.load() && g_renderer)
+    {
+        const bool tilesAlreadyStarted = g_imageInfo.hasGpsDecimal;
+        ApplyDecodeResult(hwnd, result);
+        TriggerPrefetch();
+        TriggerLocationPrefetch();
+        UpdateStripSlots(hwnd);
+        TriggerThumbFetches(hwnd);
+        if (g_imageInfo.hasGpsDecimal && !tilesAlreadyStarted
+            && g_viewState.locationConsent == LocationConsent::Enabled)
+            StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+    }
+    delete result;
+    return 0;
+}
+
+static LRESULT On_WM_META_DONE(HWND hwnd, LPARAM lParam)
+{
+    auto* meta = reinterpret_cast<MetaResult*>(lParam);
+    if (meta->generation == g_decodeGeneration.load())
+    {
+        meta->info.filename      = g_imageInfo.filename;
+        meta->info.fileSizeBytes = g_imageInfo.fileSizeBytes;
+        g_imageInfo = std::move(meta->info);
+        if (g_imageInfo.hasGpsDecimal && g_viewState.locationConsent == LocationConsent::Enabled)
+            StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    delete meta;
+    return 0;
+}
+
+static LRESULT On_WM_LOCATION_DONE(HWND hwnd, LPARAM lParam)
+{
+    auto* loc = reinterpret_cast<LocationResult*>(lParam);
+    if (loc->generation == g_decodeGeneration.load())
+    {
+        g_imageInfo.gpsLocationName = std::move(loc->locationName);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    delete loc;
+    return 0;
+}
+
+static LRESULT On_WM_PREVIEW_DONE(HWND hwnd, LPARAM lParam)
+{
+    auto* prev = reinterpret_cast<PreviewResult*>(lParam);
+    if (prev->generation == g_decodeGeneration.load()
+        && g_renderer && !prev->pixels.empty())
+    {
+        g_renderer->LoadImageFromPixels(
+            prev->pixels.data(), prev->width, prev->height, L"");
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    delete prev;
+    return 0;
+}
+
+static LRESULT On_WM_THUMB_DONE(HWND hwnd, LPARAM lParam)
+{
+    auto* result = reinterpret_cast<ThumbResult*>(lParam);
+    if (g_renderer && !result->pixels.empty())
+    {
+        g_renderer->LoadThumbnail(result->path,
+                                  result->pixels.data(),
+                                  result->width,
+                                  result->height);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    delete result;
+    return 0;
+}
+
+static LRESULT On_WM_TILE_DONE(HWND hwnd, LPARAM lParam)
+{
+    auto* result = reinterpret_cast<TileFetchResult*>(lParam);
+    if (result->cancelToken == g_tileCancel.load() && g_renderer && !result->pixels.empty())
+    {
+        g_renderer->UploadMapTileRaw(result->zoom, result->x, result->y,
+                                     result->pixels.data(), result->width, result->height);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    delete result;
+    return 0;
+}
+
+static LRESULT On_WM_DESTROY(HWND hwnd)
+{
+    SaveWindowPlacement(hwnd);
+    ++g_decodeGeneration;
+    { std::lock_guard<std::mutex> lk(g_prefetchDesiredMutex); g_prefetchDesired.clear(); }
+    ++g_thumbCancel;
+    ++g_tileCancel;
+    if (g_decodeThread.joinable())
+        g_decodeThread.detach();
+    KillTimer(hwnd, kZoomIndicatorTimerID);
+    KillTimer(hwnd, kPanelAnimTimerID);
+    KillTimer(hwnd, kAnimTimerID);
+    KillTimer(hwnd, kZoomAnimTimerID);
+    KillTimer(hwnd, kStripAnimTimerID);
+    KillTimer(hwnd, kIndexIdleTimerID);
+    KillTimer(hwnd, kIndexFadeTimerID);
+    KillTimer(hwnd, kZoomFadeTimerID);
+    KillTimer(hwnd, kCopyFeedbackTimerID);
+    KillTimer(hwnd, kEditToolbarIdleTimerID);
+    KillTimer(hwnd, kEditToolbarFadeTimerID);
+    KillTimer(hwnd, kTooltipDelayTimerID);
+    KillTimer(hwnd, kTooltipFadeTimerID);
+    KillTimer(hwnd, kDialogFadeTimerID);
+    KillTimer(hwnd, kSaveBarFadeTimerID);
+    KillTimer(hwnd, kEditMoreFadeTimerID);
+    KillTimer(hwnd, kDirChangeTimerID);
+    StopLocationPrefetchThread();
+    SaveLocationCache();
+    StopDirectoryWatcher();
+    timeEndPeriod(1);
+    {
+        std::lock_guard<std::mutex> lock(g_cacheMutex);
+        for (auto& [path, result] : g_decodeCache)
+            delete result;
+        g_decodeCache.clear();
+    }
+    delete g_navigator; g_navigator = nullptr;
+    delete g_renderer;  g_renderer  = nullptr;
+    PostQuitMessage(0);
+    return 0;
+}
+
 // --- WndProc ---
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -2244,1397 +4249,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_MOUSEWHEEL:
-    {
-        int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-        POINT cursor;
-        cursor.x = GET_X_LPARAM(lParam);
-        cursor.y = GET_Y_LPARAM(lParam);
-        ScreenToClient(hwnd, &cursor);
-
-        float cx = static_cast<float>(cursor.x);
-        float cy = static_cast<float>(cursor.y);
-
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-        float wndW = static_cast<float>(rc.right);
-        float wndH = static_cast<float>(rc.bottom);
-
-        // Info panel üzerindeyse → panel içeriğini kaydır (zoom/navigasyon değil)
-        if (g_viewState.panelAnimWidth > 0.0f &&
-            cx >= wndW - g_viewState.panelAnimWidth)
-        {
-            constexpr float kScrollStep = 40.0f;
-            g_viewState.panelScrollY += (delta > 0 ? -kScrollStep : kScrollStep);
-            // Sınırla: 0 ≤ scrollY ≤ (içerik yüksekliği − görünür alan)
-            float maxScroll = 0.0f;
-            if (g_renderer)
-            {
-                float visibleH = wndH - PanelLayout::HeaderH - g_viewState.stripAnimHeight;
-                maxScroll = max(0.0f, g_renderer->GetInfoPanelContentHeight() - visibleH);
-            }
-            g_viewState.panelScrollY = max(0.0f, min(maxScroll, g_viewState.panelScrollY));
-            InvalidateRect(hwnd, nullptr, FALSE);
-            return 0;
-        }
-
-        // Filmstrip üzerindeyse scroll → navigasyon (panel alanı zaten yukarıda döndü)
-        if (g_viewState.stripAnimHeight > 0.0f && g_navigator && !g_navigator->empty())
-        {
-            if (cy >= wndH - g_viewState.stripAnimHeight)
-            {
-                if (delta > 0)
-                    NavigateTo(hwnd, g_navigator->next());
-                else
-                    NavigateTo(hwnd, g_navigator->prev());
-                return 0;
-            }
-        }
-
-        // Kırpma modu açıkken zoom yapma
-        if (g_viewState.showCropDialog) return 0;
-
-        // zoomTarget baz alınır — hızlı scroll'da her tick önceki hedef üstüne biner
-        float newZoom = g_viewState.zoomTarget * (delta > 0 ? 1.15f : (1.0f / 1.15f));
-        ApplyZoom(hwnd, cx, cy, newZoom);
-        ShowZoomIndicator(hwnd);
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return 0;
-    }
+        return On_WM_MOUSEWHEEL(hwnd, wParam, lParam);
 
     case WM_LBUTTONDOWN:
-    {
-        float mx = static_cast<float>(GET_X_LPARAM(lParam));
-        float my = static_cast<float>(GET_Y_LPARAM(lParam));
-
-        // Kırpma modu açıksa — tutamaç sürükleme / buton tıklaması
-        if (g_viewState.showCropDialog)
-        {
-            if (g_renderer && g_renderer->IsCropDlgVisible())
-            {
-                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-
-                // Oran butonları ve İptal/Uygula tıklaması
-                for (int i = 0; i < 5; ++i)
-                    if (inR(mx, my, g_renderer->GetCropDlgRatioRect(i)))
-                    {
-                        g_viewState.cropDlgPressedBtn = i + 1;
-                        SetCapture(hwnd);
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                        return 0;
-                    }
-                if (inR(mx, my, g_renderer->GetCropDlgCancelRect()))
-                {
-                    g_viewState.cropDlgPressedBtn = 6;
-                    SetCapture(hwnd);
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    return 0;
-                }
-                if (inR(mx, my, g_renderer->GetCropDlgApplyRect()))
-                {
-                    g_viewState.cropDlgPressedBtn = 7;
-                    SetCapture(hwnd);
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    return 0;
-                }
-
-                // Tutamaç hit testi
-                D2D1_RECT_F imgR = g_renderer->GetImageDisplayRect();
-                float imgW = imgR.right - imgR.left;
-                float imgH = imgR.bottom - imgR.top;
-                if (imgW > 0.0f && imgH > 0.0f)
-                {
-                    float cx0 = imgR.left + g_viewState.cropX0 * imgW;
-                    float cy0 = imgR.top  + g_viewState.cropY0 * imgH;
-                    float cx1 = imgR.left + g_viewState.cropX1 * imgW;
-                    float cy1 = imgR.top  + g_viewState.cropY1 * imgH;
-                    float midX = (cx0 + cx1) * 0.5f;
-                    float midY = (cy0 + cy1) * 0.5f;
-                    constexpr float kHitR = 12.0f;
-
-                    auto hitHandle = [&](float hx, float hy) {
-                        return fabsf(mx - hx) <= kHitR && fabsf(my - hy) <= kHitR;
-                    };
-
-                    int handle = 0;
-                    if      (hitHandle(cx0, cy0))  handle = 1;  // TL köşe
-                    else if (hitHandle(cx1, cy0))  handle = 2;  // TR köşe
-                    else if (hitHandle(cx0, cy1))  handle = 3;  // BL köşe
-                    else if (hitHandle(cx1, cy1))  handle = 4;  // BR köşe
-                    else if (hitHandle(midX, cy0)) handle = 5;  // üst kenar
-                    else if (hitHandle(midX, cy1)) handle = 6;  // alt kenar
-                    else if (hitHandle(cx0, midY)) handle = 7;  // sol kenar
-                    else if (hitHandle(cx1, midY)) handle = 8;  // sağ kenar
-                    else if (mx > cx0 && mx < cx1 && my > cy0 && my < cy1) handle = 9;  // taşı
-
-                    if (handle != 0)
-                    {
-                        g_cropDragging      = true;
-                        g_cropDragHandle    = handle;
-                        g_cropDragAnchorX   = mx;
-                        g_cropDragAnchorY   = my;
-                        g_cropDragSavedX0   = g_viewState.cropX0;
-                        g_cropDragSavedY0   = g_viewState.cropY0;
-                        g_cropDragSavedX1   = g_viewState.cropX1;
-                        g_cropDragSavedY1   = g_viewState.cropY1;
-                        SetCapture(hwnd);
-                        return 0;
-                    }
-                }
-            }
-            return 0;
-        }
-
-        // Serbest döndürme dialogu açıksa — slider/buton etkileşimi, diğerini engelle
-        if (g_viewState.showRotateFreeDialog)
-        {
-            if (g_renderer && g_renderer->IsRotFreeDlgVisible())
-            {
-                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-                if (inR(mx, my, g_renderer->GetRotFreeDlgSliderRect()))
-                {
-                    g_rotFreeDlgSliderDragging = true;
-                    SetCapture(hwnd);
-                    // Tıklanan x pozisyonundan açıyı hesapla
-                    D2D1_RECT_F sr = g_renderer->GetRotFreeDlgSliderRect();
-                    float railLeft  = sr.left  + 9.0f;
-                    float railRight = sr.right  - 9.0f;
-                    float t = (mx - railLeft) / (railRight - railLeft);
-                    float angle = t * 90.0f - 45.0f;
-                    if (angle < -45.0f) angle = -45.0f;
-                    if (angle >  45.0f) angle =  45.0f;
-                    g_viewState.rotateFreeAngle = angle;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-                else
-                {
-                    int hit = 0;
-                    if      (inR(mx, my, g_renderer->GetRotFreeDlgCoarseDecRect())) hit = 1;
-                    else if (inR(mx, my, g_renderer->GetRotFreeDlgFineDecRect()))   hit = 2;
-                    else if (inR(mx, my, g_renderer->GetRotFreeDlgFineIncRect()))   hit = 3;
-                    else if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseIncRect())) hit = 4;
-                    else if (inR(mx, my, g_renderer->GetRotFreeDlgResetRect()))     hit = 5;
-                    else if (inR(mx, my, g_renderer->GetRotFreeDlgCancelRect()))    hit = 6;
-                    else if (inR(mx, my, g_renderer->GetRotFreeDlgApplyRect()))     hit = 7;
-                    g_viewState.rotateFreeDlgPressBtn = hit;
-                    SetCapture(hwnd);
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            }
-            return 0;
-        }
-
-        // Resize dialogu açıksa — buton press state güncelle, diğer etkileşimi engelle
-        if (g_viewState.showResizeDialog)
-        {
-            if (g_renderer && g_renderer->IsResizeDialogVisible())
-            {
-                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-                int hit = 0;
-                if      (inR(mx, my, g_renderer->GetResizeDlgCancelRect()))  hit = 1;
-                else if (inR(mx, my, g_renderer->GetResizeDlgApplyRect()))   hit = 2;
-                else if (inR(mx, my, g_renderer->GetResizeDlgModePxRect()))  hit = 3;
-                else if (inR(mx, my, g_renderer->GetResizeDlgModePctRect())) hit = 4;
-                else if (inR(mx, my, g_renderer->GetResizeDlgWDecRect()))    hit = 5;
-                else if (inR(mx, my, g_renderer->GetResizeDlgWIncRect()))    hit = 6;
-                else if (inR(mx, my, g_renderer->GetResizeDlgHDecRect()))    hit = 7;
-                else if (inR(mx, my, g_renderer->GetResizeDlgHIncRect()))    hit = 8;
-                else if (inR(mx, my, g_renderer->GetResizeDlgLockRect()))    hit = 9;
-                g_viewState.resizeDlgPressedBtn = hit;
-                SetCapture(hwnd);
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            return 0;
-        }
-
-        // Silme dialogu açıksa — buton press state güncelle, diğer etkileşimi engelle
-        if (g_viewState.showDeleteConfirmDialog || g_viewState.showUnsavedWarningDialog)
-        {
-            if (g_renderer && g_renderer->IsDeleteDialogVisible())
-            {
-                auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-                if (!g_viewState.showUnsavedWarningDialog &&
-                    inRect(mx, my, g_renderer->GetDlgCancelRect()))
-                    g_viewState.deleteDlgPressedBtn = 1;
-                else if (inRect(mx, my, g_renderer->GetDlgDeleteRect()))
-                    g_viewState.deleteDlgPressedBtn = 2;
-                else
-                    g_viewState.deleteDlgPressedBtn = 0;
-                SetCapture(hwnd);
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            return 0;
-        }
-
-        g_mouseDownX = mx;
-        g_mouseDownY = my;
-        SetCapture(hwnd);
-        ResetIndexIdleTimer(hwnd);
-
-        // Info button ve Delete button kontrolü
-        g_clickIsInfoButton = HitTestInfoButton(hwnd, mx, my, g_viewState.panelAnimWidth);
-        g_clickIsDeleteBtn  = false;
-        if (!g_clickIsInfoButton && g_renderer && g_renderer->IsDeleteBtnVisible())
-        {
-            D2D1_RECT_F dr = g_renderer->GetDeleteBtnRect();
-            g_clickIsDeleteBtn = (mx >= dr.left && mx <= dr.right && my >= dr.top && my <= dr.bottom);
-        }
-        if (g_clickIsInfoButton)
-        {
-            g_viewState.infoBtnPressed = true;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (g_clickIsDeleteBtn)
-        {
-            g_viewState.deleteBtnPressed = true;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-
-        if (!g_clickIsInfoButton && !g_clickIsDeleteBtn)
-        {
-            // Edit toolbar butonu tıklaması
-            if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
-            {
-                auto inR2 = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-                D2D1_RECT_F rL    = g_renderer->GetEditBtnRotLRect();
-                D2D1_RECT_F rR    = g_renderer->GetEditBtnRotRRect();
-                D2D1_RECT_F rMore = g_renderer->GetEditBtnMoreRect();
-                D2D1_RECT_F rFr   = g_renderer->GetEditBtnRotFreeRect();
-                D2D1_RECT_F rRz   = g_renderer->GetEditBtnResizeRect();
-                D2D1_RECT_F rCr   = g_renderer->GetEditBtnCropRect();
-                bool hitL    = inR2(mx, my, rL);
-                bool hitR    = inR2(mx, my, rR);
-                bool hitMore = inR2(mx, my, rMore);
-                bool hitFr   = inR2(mx, my, rFr);
-                bool hitRz   = inR2(mx, my, rRz);
-                bool hitCr   = inR2(mx, my, rCr);
-                if (hitL || hitR || hitMore || hitFr || hitRz || hitCr)
-                {
-                    g_clickInToolbar = true;
-                    g_viewState.editBtnRotLPressed    = hitL;
-                    g_viewState.editBtnRotRPressed    = hitR;
-                    g_viewState.editBtnMorePressed    = hitMore;
-                    g_viewState.editBtnRotFreePressed = hitFr;
-                    g_viewState.editBtnResizePressed  = hitRz;
-                    g_viewState.editBtnCropPressed    = hitCr;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    return 0;
-                }
-            }
-
-            // Save bar butonu tıklaması
-            if (g_renderer && g_renderer->IsSaveBarVisible() && g_viewState.editDirty)
-            {
-                D2D1_RECT_F rSave    = g_renderer->GetSaveBarSaveRect();
-                D2D1_RECT_F rDiscard = g_renderer->GetSaveBarDiscardRect();
-                D2D1_RECT_F rSaveAs  = g_renderer->GetSaveBarSaveAsRect();
-                bool hitSave    = (mx >= rSave.left    && mx <= rSave.right    && my >= rSave.top    && my <= rSave.bottom);
-                bool hitDiscard = (mx >= rDiscard.left && mx <= rDiscard.right && my >= rDiscard.top && my <= rDiscard.bottom);
-                bool hitSaveAs  = (mx >= rSaveAs.left  && mx <= rSaveAs.right  && my >= rSaveAs.top  && my <= rSaveAs.bottom);
-                if (hitSave || hitDiscard || hitSaveAs)
-                {
-                    g_clickInSaveBar = true;
-                    g_viewState.saveBarPressedBtn = hitSave ? 1 : (hitDiscard ? 2 : 3);
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    return 0;
-                }
-            }
-
-            // Strip toggle pill tıklaması (strip alanının dışında olabilir)
-            if (g_renderer && g_renderer->IsStripToggleVisible())
-            {
-                D2D1_RECT_F tr = g_renderer->GetStripToggleRect();
-                if (mx >= tr.left && mx <= tr.right && my >= tr.top && my <= tr.bottom)
-                {
-                    g_viewState.toggleBtnPressed = true;
-                    g_clickInStrip = true;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    return 0;
-                }
-            }
-
-            // Strip alanına tıklama (thumbnail filmstrip)
-            if (g_viewState.stripAnimHeight > 0.0f)
-            {
-                RECT rc;
-                GetClientRect(hwnd, &rc);
-                if (my >= static_cast<float>(rc.bottom) - g_viewState.stripAnimHeight)
-                {
-                    g_clickInStrip = true;
-                    return 0;
-                }
-            }
-
-            // Panel alanına tıklandığında drag/ok/zoom engellenir
-            if (g_viewState.panelAnimWidth > 0.0f)
-            {
-                RECT rc;
-                GetClientRect(hwnd, &rc);
-                if (mx >= static_cast<float>(rc.right) - g_viewState.panelAnimWidth)
-                {
-                    // Konum onay butonlarına basış — press state
-                    if (g_renderer && g_renderer->IsLocationConsentVisible())
-                    {
-                        auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                        };
-                        if      (inR(mx, my, g_renderer->GetLocationYesRect())) g_viewState.locationConsentPress = 1;
-                        else if (inR(mx, my, g_renderer->GetLocationNoRect()))  g_viewState.locationConsentPress = 2;
-                        if (g_viewState.locationConsentPress != 0)
-                            InvalidateRect(hwnd, nullptr, FALSE);
-                    }
-                    g_clickInPanel = true;
-                    return 0;
-                }
-            }
-
-            // Ok zone kontrolü: hangi bölgeye basıldığını kaydet
-            ArrowZone zone = (g_viewState.imageTotal > 0)
-                             ? HitTestArrow(hwnd, mx, my, g_viewState.panelAnimWidth)
-                             : ArrowZone::None;
-            g_mouseInArrowZone = (zone != ArrowZone::None);
-            g_clickIsLeft      = (zone == ArrowZone::Left);
-            g_viewState.leftArrowPressed  = (zone == ArrowZone::Left);
-            g_viewState.rightArrowPressed = (zone == ArrowZone::Right);
-            if (g_viewState.leftArrowPressed || g_viewState.rightArrowPressed)
-                InvalidateRect(hwnd, nullptr, FALSE);
-
-            // Pan sürüklemeyi başlat
-            g_dragging        = true;
-            g_dragStartX      = mx;
-            g_dragStartY      = my;
-            g_panAtDragStartX = g_viewState.panX;
-            g_panAtDragStartY = g_viewState.panY;
-        }
-        return 0;
-    }
+        return On_WM_LBUTTONDOWN(hwnd, lParam);
 
     case WM_MOUSEMOVE:
-    {
-        float mx = static_cast<float>(GET_X_LPARAM(lParam));
-        float my = static_cast<float>(GET_Y_LPARAM(lParam));
-
-        // Kırpma modu açıksa — drag güncelle veya hover güncelle
-        if (g_viewState.showCropDialog)
-        {
-            if (g_cropDragging && g_renderer)
-            {
-                D2D1_RECT_F imgR = g_renderer->GetImageDisplayRect();
-                float imgW = imgR.right - imgR.left;
-                float imgH = imgR.bottom - imgR.top;
-                if (imgW > 0.0f && imgH > 0.0f)
-                {
-                    float ndx = (mx - g_cropDragAnchorX) / imgW;
-                    float ndy = (my - g_cropDragAnchorY) / imgH;
-                    constexpr float kMinSize = 0.03f;
-
-                    float x0 = g_cropDragSavedX0, y0 = g_cropDragSavedY0;
-                    float x1 = g_cropDragSavedX1, y1 = g_cropDragSavedY1;
-
-                    switch (g_cropDragHandle) {
-                    case 1: x0 = x0 + ndx; y0 = y0 + ndy; break;  // TL
-                    case 2: x1 = x1 + ndx; y0 = y0 + ndy; break;  // TR
-                    case 3: x0 = x0 + ndx; y1 = y1 + ndy; break;  // BL
-                    case 4: x1 = x1 + ndx; y1 = y1 + ndy; break;  // BR
-                    case 5: y0 = y0 + ndy; break;                   // üst
-                    case 6: y1 = y1 + ndy; break;                   // alt
-                    case 7: x0 = x0 + ndx; break;                   // sol
-                    case 8: x1 = x1 + ndx; break;                   // sağ
-                    case 9:  // taşı
-                    {
-                        float w = x1 - x0, h = y1 - y0;
-                        x0 = x0 + ndx; x1 = x0 + w;
-                        y0 = y0 + ndy; y1 = y0 + h;
-                        if (x0 < 0.0f) { x0 = 0.0f; x1 = w; }
-                        if (x1 > 1.0f) { x1 = 1.0f; x0 = 1.0f - w; }
-                        if (y0 < 0.0f) { y0 = 0.0f; y1 = h; }
-                        if (y1 > 1.0f) { y1 = 1.0f; y0 = 1.0f - h; }
-                        break;
-                    }
-                    }
-
-                    // Sınır ve minimum boyut
-                    if (g_cropDragHandle != 9)
-                    {
-                        x0 = max(0.0f, min(x0, 1.0f));
-                        y0 = max(0.0f, min(y0, 1.0f));
-                        x1 = max(0.0f, min(x1, 1.0f));
-                        y1 = max(0.0f, min(y1, 1.0f));
-                        if (x1 < x0 + kMinSize) {
-                            if (g_cropDragHandle == 1 || g_cropDragHandle == 3 || g_cropDragHandle == 7)
-                                x0 = x1 - kMinSize;
-                            else
-                                x1 = x0 + kMinSize;
-                        }
-                        if (y1 < y0 + kMinSize) {
-                            if (g_cropDragHandle == 1 || g_cropDragHandle == 2 || g_cropDragHandle == 5)
-                                y0 = y1 - kMinSize;
-                            else
-                                y1 = y0 + kMinSize;
-                        }
-                    }
-
-                    g_viewState.cropX0 = x0; g_viewState.cropY0 = y0;
-                    g_viewState.cropX1 = x1; g_viewState.cropY1 = y1;
-
-                    // Oran kilidi varsa uygula — drag'de karşı köşe/kenar sabit kalır
-                    if (g_viewState.cropAspectMode != 0)
-                        ApplyCropAspectConstraintDrag(imgW, imgH, g_cropDragHandle);
-
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            }
-            else if (g_renderer && g_renderer->IsCropDlgVisible())
-            {
-                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-                int newHover = 0;
-                for (int i = 0; i < 5; ++i)
-                    if (inR(mx, my, g_renderer->GetCropDlgRatioRect(i))) { newHover = i + 1; break; }
-                if (!newHover && inR(mx, my, g_renderer->GetCropDlgCancelRect())) newHover = 6;
-                if (!newHover && inR(mx, my, g_renderer->GetCropDlgApplyRect()))  newHover = 7;
-                if (newHover != g_viewState.cropDlgHoverBtn)
-                {
-                    g_viewState.cropDlgHoverBtn = newHover;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            }
-            return 0;
-        }
-
-        // Serbest döndürme dialogu açıksa — slider sürükleme + hover güncelle
-        if (g_viewState.showRotateFreeDialog)
-        {
-            if (g_rotFreeDlgSliderDragging && g_renderer && g_renderer->IsRotFreeDlgVisible())
-            {
-                D2D1_RECT_F sr = g_renderer->GetRotFreeDlgSliderRect();
-                float railLeft  = sr.left  + 9.0f;
-                float railRight = sr.right  - 9.0f;
-                float t = (mx - railLeft) / (railRight - railLeft);
-                float angle = t * 90.0f - 45.0f;
-                if (angle < -45.0f) angle = -45.0f;
-                if (angle >  45.0f) angle =  45.0f;
-                if (fabsf(angle - g_viewState.rotateFreeAngle) > 0.05f)
-                {
-                    g_viewState.rotateFreeAngle = angle;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            }
-            else if (g_renderer && g_renderer->IsRotFreeDlgVisible())
-            {
-                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-                int newHover = 0;
-                if      (inR(mx, my, g_renderer->GetRotFreeDlgCoarseDecRect())) newHover = 1;
-                else if (inR(mx, my, g_renderer->GetRotFreeDlgFineDecRect()))   newHover = 2;
-                else if (inR(mx, my, g_renderer->GetRotFreeDlgFineIncRect()))   newHover = 3;
-                else if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseIncRect())) newHover = 4;
-                else if (inR(mx, my, g_renderer->GetRotFreeDlgResetRect()))     newHover = 5;
-                else if (inR(mx, my, g_renderer->GetRotFreeDlgCancelRect()))    newHover = 6;
-                else if (inR(mx, my, g_renderer->GetRotFreeDlgApplyRect()))     newHover = 7;
-                if (newHover != g_viewState.rotateFreeDlgHoverBtn)
-                {
-                    g_viewState.rotateFreeDlgHoverBtn = newHover;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            }
-            return 0;
-        }
-
-        // Resize dialogu açıksa — hover güncelle
-        if (g_viewState.showResizeDialog)
-        {
-            if (g_renderer && g_renderer->IsResizeDialogVisible())
-            {
-                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-                int newHover = 0;
-                if      (inR(mx, my, g_renderer->GetResizeDlgCancelRect()))  newHover = 1;
-                else if (inR(mx, my, g_renderer->GetResizeDlgApplyRect()))   newHover = 2;
-                else if (inR(mx, my, g_renderer->GetResizeDlgModePxRect()))  newHover = 3;
-                else if (inR(mx, my, g_renderer->GetResizeDlgModePctRect())) newHover = 4;
-                else if (inR(mx, my, g_renderer->GetResizeDlgWDecRect()))    newHover = 5;
-                else if (inR(mx, my, g_renderer->GetResizeDlgWIncRect()))    newHover = 6;
-                else if (inR(mx, my, g_renderer->GetResizeDlgHDecRect()))    newHover = 7;
-                else if (inR(mx, my, g_renderer->GetResizeDlgHIncRect()))    newHover = 8;
-                else if (inR(mx, my, g_renderer->GetResizeDlgLockRect()))    newHover = 9;
-                if (newHover != g_viewState.resizeDlgHoverBtn)
-                {
-                    g_viewState.resizeDlgHoverBtn = newHover;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            }
-            return 0;
-        }
-
-        // Silme dialogu açıksa — hover güncelle
-        if (g_viewState.showDeleteConfirmDialog || g_viewState.showUnsavedWarningDialog)
-        {
-            if (g_renderer && g_renderer->IsDeleteDialogVisible())
-            {
-                auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-                int newHover = 0;
-                if (!g_viewState.showUnsavedWarningDialog &&
-                    inRect(mx, my, g_renderer->GetDlgCancelRect()))
-                    newHover = 1;
-                else if (inRect(mx, my, g_renderer->GetDlgDeleteRect()))
-                    newHover = 2;
-                if (newHover != g_viewState.deleteDlgHoverBtn)
-                {
-                    g_viewState.deleteDlgHoverBtn = newHover;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            }
-            return 0;
-        }
-
-        // Edit toolbar hover — düzenlenebilir statik görüntü varsa toolbar göster
-        if (!g_viewState.editIsAnimated && !g_edit.pixels.empty())
-        {
-            if (!g_mouseTracking)
-            {
-                TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
-                TrackMouseEvent(&tme);
-                g_mouseTracking = true;
-            }
-            if (!g_viewState.editDirty)
-            {
-                KillTimer(hwnd, kEditToolbarFadeTimerID);
-                KillTimer(hwnd, kEditToolbarIdleTimerID);
-                SetTimer(hwnd, kEditToolbarIdleTimerID, 2000, nullptr);
-            }
-            if (g_viewState.editToolbarAlpha < 1.0f)
-            {
-                g_viewState.editToolbarAlpha = 1.0f;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-        }
-
-        // Edit toolbar buton hover — tooltip tetikleyicisi
-        if (g_renderer && g_renderer->IsEditToolbarVisible()
-            && !g_viewState.showCropDialog && !g_viewState.showResizeDialog && !g_viewState.showRotateFreeDialog)
-        {
-            auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-            };
-            int newHov = 0;
-            if      (inR(mx, my, g_renderer->GetEditBtnRotLRect()))    newHov = 1;
-            else if (inR(mx, my, g_renderer->GetEditBtnRotRRect()))    newHov = 2;
-            else if (inR(mx, my, g_renderer->GetEditBtnMoreRect()))    newHov = 3;
-            else if (inR(mx, my, g_renderer->GetEditBtnRotFreeRect())) newHov = 4;
-            else if (inR(mx, my, g_renderer->GetEditBtnResizeRect()))  newHov = 5;
-            else if (inR(mx, my, g_renderer->GetEditBtnCropRect()))    newHov = 6;
-            if (newHov != g_viewState.editToolbarHoverBtn)
-            {
-                g_viewState.editToolbarHoverBtn    = newHov;
-                g_viewState.editToolbarTooltipAlpha = 0.0f;
-                KillTimer(hwnd, kTooltipFadeTimerID);
-                if (newHov != 0)
-                    SetTimer(hwnd, kTooltipDelayTimerID, 500, nullptr);
-                else
-                    KillTimer(hwnd, kTooltipDelayTimerID);
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-        }
-        else if (g_viewState.editToolbarHoverBtn != 0)
-        {
-            g_viewState.editToolbarHoverBtn    = 0;
-            g_viewState.editToolbarTooltipAlpha = 0.0f;
-            KillTimer(hwnd, kTooltipDelayTimerID);
-            KillTimer(hwnd, kTooltipFadeTimerID);
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-
-        // Konum onay butonları hover takibi
-        if (g_renderer && g_renderer->IsLocationConsentVisible())
-        {
-            auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-            };
-            int newHover = 0;
-            if      (inR(mx, my, g_renderer->GetLocationYesRect())) newHover = 1;
-            else if (inR(mx, my, g_renderer->GetLocationNoRect()))  newHover = 2;
-            if (newHover != g_viewState.locationConsentHover)
-            {
-                g_viewState.locationConsentHover = newHover;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-        }
-        else if (g_viewState.locationConsentHover != 0)
-        {
-            g_viewState.locationConsentHover = 0;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-
-        // Save bar hover — hangi butonun üzerinde olduğunu güncelle
-        if (g_renderer && g_renderer->IsSaveBarVisible())
-        {
-            if (!g_mouseTracking)
-            {
-                TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
-                TrackMouseEvent(&tme);
-                g_mouseTracking = true;
-            }
-            auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
-                return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-            };
-            int newHover = 0;
-            if      (inRect(mx, my, g_renderer->GetSaveBarSaveRect()))    newHover = 1;
-            else if (inRect(mx, my, g_renderer->GetSaveBarDiscardRect())) newHover = 2;
-            else if (inRect(mx, my, g_renderer->GetSaveBarSaveAsRect()))  newHover = 3;
-            if (newHover != g_viewState.saveBarHover)
-            {
-                g_viewState.saveBarHover = newHover;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-        }
-        else if (g_viewState.saveBarHover != 0)
-        {
-            g_viewState.saveBarHover = 0;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-
-        if (!g_dragging) return 0;
-        float nx = g_panAtDragStartX + (mx - g_dragStartX);
-        float ny = g_panAtDragStartY + (my - g_dragStartY);
-        g_viewState.panX = g_viewState.panXTarget = nx;
-        g_viewState.panY = g_viewState.panYTarget = ny;
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return 0;
-    }
+        return On_WM_MOUSEMOVE(hwnd, lParam);
 
     case WM_MOUSELEAVE:
-        g_mouseTracking = false;
-        if (!g_viewState.editDirty && g_viewState.editToolbarAlpha > 0.0f)
-        {
-            KillTimer(hwnd, kEditToolbarIdleTimerID);
-            QueryPerformanceCounter(&g_editToolbarFadeLastTime);
-            SetTimer(hwnd, kEditToolbarFadeTimerID, kAnimIntervalMs, nullptr);
-        }
-        if (g_viewState.editToolbarHoverBtn != 0 || g_viewState.editToolbarTooltipAlpha > 0.0f)
-        {
-            g_viewState.editToolbarHoverBtn    = 0;
-            g_viewState.editToolbarTooltipAlpha = 0.0f;
-            KillTimer(hwnd, kTooltipDelayTimerID);
-            KillTimer(hwnd, kTooltipFadeTimerID);
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        if (g_viewState.saveBarHover != 0 || g_viewState.saveBarPressedBtn != 0)
-        {
-            g_viewState.saveBarHover      = 0;
-            g_viewState.saveBarPressedBtn = 0;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        if (g_viewState.locationConsentHover != 0 || g_viewState.locationConsentPress != 0)
-        {
-            g_viewState.locationConsentHover = 0;
-            g_viewState.locationConsentPress = 0;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        return 0;
+        return On_WM_MOUSELEAVE(hwnd);
 
     case WM_LBUTTONUP:
-    {
-        float mx = static_cast<float>(GET_X_LPARAM(lParam));
-        float my = static_cast<float>(GET_Y_LPARAM(lParam));
-
-        // Kırpma modu açıksa — drag bırakma / buton eylemi
-        if (g_viewState.showCropDialog)
-        {
-            if (g_cropDragging)
-            {
-                g_cropDragging = false;
-                g_cropDragHandle = 0;
-                ReleaseCapture();
-                InvalidateRect(hwnd, nullptr, FALSE);
-                return 0;
-            }
-            int pressed = g_viewState.cropDlgPressedBtn;
-            g_viewState.cropDlgPressedBtn = 0;
-            ReleaseCapture();
-
-            if (g_renderer && g_renderer->IsCropDlgVisible() && pressed != 0)
-            {
-                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-
-                if (pressed >= 1 && pressed <= 5)
-                {
-                    // Oran butonu
-                    if (inR(mx, my, g_renderer->GetCropDlgRatioRect(pressed - 1)))
-                    {
-                        g_viewState.cropAspectMode = pressed - 1;
-                        if (g_viewState.cropAspectMode != 0)
-                        {
-                            D2D1_RECT_F imgR = g_renderer->GetImageDisplayRect();
-                            float imgW = imgR.right - imgR.left;
-                            float imgH = imgR.bottom - imgR.top;
-                            if (imgW > 0.0f && imgH > 0.0f)
-                                ApplyCropAspectConstraint(imgW, imgH);
-                        }
-                    }
-                }
-                else if (pressed == 6)  // İptal
-                {
-                    if (inR(mx, my, g_renderer->GetCropDlgCancelRect()))
-                    {
-                        g_viewState.showCropDialog    = false;
-                        g_viewState.cropDlgHoverBtn   = 0;
-                        g_viewState.cropDlgPressedBtn = 0;
-                    }
-                }
-                else if (pressed == 7)  // Uygula
-                {
-                    if (inR(mx, my, g_renderer->GetCropDlgApplyRect()))
-                        DoApplyCrop(hwnd);
-                }
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-            return 0;
-        }
-
-        // Serbest döndürme dialogu açıksa — slider bırakma / buton eylemi
-        if (g_viewState.showRotateFreeDialog)
-        {
-            if (g_rotFreeDlgSliderDragging)
-            {
-                g_rotFreeDlgSliderDragging = false;
-                ReleaseCapture();
-                InvalidateRect(hwnd, nullptr, FALSE);
-                return 0;
-            }
-            int pressed = g_viewState.rotateFreeDlgPressBtn;
-            g_viewState.rotateFreeDlgPressBtn = 0;
-            ReleaseCapture();
-
-            if (g_renderer && g_renderer->IsRotFreeDlgVisible() && pressed != 0)
-            {
-                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-                auto clampAngle = [](float a) {
-                    return a < -45.0f ? -45.0f : (a > 45.0f ? 45.0f : a);
-                };
-                switch (pressed)
-                {
-                case 1:  // −1°
-                    if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseDecRect()))
-                        g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle - 1.0f);
-                    break;
-                case 2:  // −0.1°
-                    if (inR(mx, my, g_renderer->GetRotFreeDlgFineDecRect()))
-                        g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle - 0.1f);
-                    break;
-                case 3:  // +0.1°
-                    if (inR(mx, my, g_renderer->GetRotFreeDlgFineIncRect()))
-                        g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle + 0.1f);
-                    break;
-                case 4:  // +1°
-                    if (inR(mx, my, g_renderer->GetRotFreeDlgCoarseIncRect()))
-                        g_viewState.rotateFreeAngle = clampAngle(g_viewState.rotateFreeAngle + 1.0f);
-                    break;
-                case 5:  // Sıfırla
-                    if (inR(mx, my, g_renderer->GetRotFreeDlgResetRect()))
-                        g_viewState.rotateFreeAngle = 0.0f;
-                    break;
-                case 6:  // İptal
-                    g_viewState.showRotateFreeDialog  = false;
-                    g_viewState.rotateFreeDlgHoverBtn = 0;
-                    break;
-                case 7:  // Uygula
-                    if (inR(mx, my, g_renderer->GetRotFreeDlgApplyRect()))
-                        DoApplyRotateFree(hwnd);
-                    break;
-                }
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            else
-                InvalidateRect(hwnd, nullptr, FALSE);
-            return 0;
-        }
-
-        // Resize dialogu açıksa — buton bırakma işlemi
-        if (g_viewState.showResizeDialog)
-        {
-            int pressed = g_viewState.resizeDlgPressedBtn;
-            g_viewState.resizeDlgPressedBtn = 0;
-            ReleaseCapture();
-
-            if (g_renderer && g_renderer->IsResizeDialogVisible() && pressed != 0)
-            {
-                auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-                switch (pressed)
-                {
-                case 1:  // İptal
-                    g_viewState.showResizeDialog   = false;
-                    g_viewState.resizeDlgHoverBtn  = 0;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    break;
-                case 2:  // Uygula
-                    if (inR(mx, my, g_renderer->GetResizeDlgApplyRect()))
-                        DoResizeConfirmed(hwnd);
-                    else
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                    break;
-                case 3:  // px modu
-                    if (inR(mx, my, g_renderer->GetResizeDlgModePxRect()))
-                    {
-                        if (g_viewState.resizeMode != 0)
-                        {
-                            g_viewState.resizeMode = 0;
-                            g_viewState.resizeW = g_viewState.resizeOrigW;
-                            g_viewState.resizeH = g_viewState.resizeOrigH;
-                        }
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                    }
-                    break;
-                case 4:  // % modu
-                    if (inR(mx, my, g_renderer->GetResizeDlgModePctRect()))
-                    {
-                        if (g_viewState.resizeMode != 1)
-                        {
-                            g_viewState.resizeMode = 1;
-                            g_viewState.resizePct  = 100;
-                            g_viewState.resizeW    = g_viewState.resizeOrigW;
-                            g_viewState.resizeH    = g_viewState.resizeOrigH;
-                        }
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                    }
-                    break;
-                case 9:  // Oran kilidi toggle
-                    if (inR(mx, my, g_renderer->GetResizeDlgLockRect()))
-                    {
-                        g_viewState.resizeLockAspect = !g_viewState.resizeLockAspect;
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                    }
-                    break;
-                default:  // 5=W−, 6=W+, 7=H−, 8=H+
-                {
-                    // Dec/Inc doğrulama (mouse aynı buton üzerinde mi?)
-                    bool stillOn = false;
-                    if      (pressed == 5 && inR(mx, my, g_renderer->GetResizeDlgWDecRect())) stillOn = true;
-                    else if (pressed == 6 && inR(mx, my, g_renderer->GetResizeDlgWIncRect())) stillOn = true;
-                    else if (pressed == 7 && inR(mx, my, g_renderer->GetResizeDlgHDecRect())) stillOn = true;
-                    else if (pressed == 8 && inR(mx, my, g_renderer->GetResizeDlgHIncRect())) stillOn = true;
-                    if (stillOn)
-                        ResizeDlgAdjust(hwnd, pressed);
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    break;
-                }
-                }
-            }
-            else
-                InvalidateRect(hwnd, nullptr, FALSE);
-            return 0;
-        }
-
-        // Silme dialogu açıksa — buton bırakma işlemi
-        if (g_viewState.showDeleteConfirmDialog || g_viewState.showUnsavedWarningDialog)
-        {
-            int pressed = g_viewState.deleteDlgPressedBtn;
-            g_viewState.deleteDlgPressedBtn = 0;
-            ReleaseCapture();
-
-            if (g_renderer && g_renderer->IsDeleteDialogVisible() && pressed != 0)
-            {
-                auto inRect = [](float x, float y, const D2D1_RECT_F& r) {
-                    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                };
-                bool hitCancel = !g_viewState.showUnsavedWarningDialog &&
-                                  inRect(mx, my, g_renderer->GetDlgCancelRect());
-                bool hitDelete = inRect(mx, my, g_renderer->GetDlgDeleteRect());
-
-                if (g_viewState.showUnsavedWarningDialog)
-                {
-                    if (hitDelete) // "Tamam" butonu
-                    {
-                        g_viewState.showUnsavedWarningDialog = false;
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                    }
-                }
-                else
-                {
-                    if (hitCancel && pressed == 1)
-                    {
-                        g_viewState.showDeleteConfirmDialog = false;
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                    }
-                    else if (hitDelete && pressed == 2)
-                    {
-                        g_viewState.showDeleteConfirmDialog = false;
-                        g_viewState.deleteDlgHoverBtn = 0;
-                        DoDeleteConfirmed(hwnd);
-                    }
-                    else
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            }
-            else
-                InvalidateRect(hwnd, nullptr, FALSE);
-            return 0;
-        }
-
-        bool wasDragging = g_dragging;
-        g_dragging = false;
-        ReleaseCapture();
-
-        // Edit toolbar butonu tıklaması
-        if (g_clickInToolbar)
-        {
-            bool wasL    = g_viewState.editBtnRotLPressed;
-            bool wasR    = g_viewState.editBtnRotRPressed;
-            bool wasMore = g_viewState.editBtnMorePressed;
-            bool wasFr   = g_viewState.editBtnRotFreePressed;
-            bool wasRz   = g_viewState.editBtnResizePressed;
-            bool wasCr   = g_viewState.editBtnCropPressed;
-            g_viewState.editBtnRotLPressed    = false;
-            g_viewState.editBtnRotRPressed    = false;
-            g_viewState.editBtnMorePressed    = false;
-            g_viewState.editBtnRotFreePressed = false;
-            g_viewState.editBtnResizePressed  = false;
-            g_viewState.editBtnCropPressed    = false;
-            g_clickInToolbar = false;
-            float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
-            if (delta < 5.0f)
-            {
-                if (wasL)        DoRotateCCW(hwnd);
-                else if (wasR)   DoRotateCW(hwnd);
-                else if (wasMore)
-                {
-                    g_viewState.editMoreExpanded = !g_viewState.editMoreExpanded;
-                    QueryPerformanceCounter(&g_editMoreFadeLastTime);
-                    KillTimer(hwnd, kEditMoreFadeTimerID);
-                    SetTimer(hwnd, kEditMoreFadeTimerID, kAnimIntervalMs, nullptr);
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-                else if (wasFr)  DoOpenRotateFreeDialog(hwnd);
-                else if (wasRz)  DoOpenResizeDialog(hwnd);
-                else if (wasCr)  DoOpenCropDialog(hwnd);
-            }
-            else
-                InvalidateRect(hwnd, nullptr, FALSE);
-            return 0;
-        }
-
-        // Save bar butonu tıklaması
-        if (g_clickInSaveBar)
-        {
-            g_clickInSaveBar = false;
-            g_viewState.saveBarPressedBtn = 0;
-            float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
-            if (delta < 5.0f && g_renderer)
-            {
-                D2D1_RECT_F rSave    = g_renderer->GetSaveBarSaveRect();
-                D2D1_RECT_F rDiscard = g_renderer->GetSaveBarDiscardRect();
-                D2D1_RECT_F rSaveAs  = g_renderer->GetSaveBarSaveAsRect();
-                if (mx >= rSave.left && mx <= rSave.right && my >= rSave.top && my <= rSave.bottom)
-                    DoSave(hwnd);
-                else if (mx >= rDiscard.left && mx <= rDiscard.right && my >= rDiscard.top && my <= rDiscard.bottom)
-                    DoDiscard(hwnd);
-                else if (mx >= rSaveAs.left && mx <= rSaveAs.right && my >= rSaveAs.top && my <= rSaveAs.bottom)
-                    DoSaveAs(hwnd);
-            }
-            else
-                InvalidateRect(hwnd, nullptr, FALSE);
-            return 0;
-        }
-
-        // Press highlight'ları her durumda temizle
-        bool needRepaint = g_viewState.infoBtnPressed
-                        || g_viewState.leftArrowPressed
-                        || g_viewState.rightArrowPressed
-                        || g_viewState.toggleBtnPressed;
-        g_viewState.infoBtnPressed    = false;
-        g_viewState.leftArrowPressed  = false;
-        g_viewState.rightArrowPressed = false;
-        g_viewState.toggleBtnPressed  = false;
-        if (needRepaint)
-            InvalidateRect(hwnd, nullptr, FALSE);
-
-        // Strip / toggle tıklaması
-        if (g_clickInStrip)
-        {
-            g_clickInStrip = false;
-            float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
-            if (delta < 5.0f && g_renderer)
-            {
-                // Toggle pill tıklaması
-                if (g_renderer->IsStripToggleVisible())
-                {
-                    D2D1_RECT_F tr = g_renderer->GetStripToggleRect();
-                    if (mx >= tr.left && mx <= tr.right && my >= tr.top && my <= tr.bottom)
-                    {
-                        g_viewState.showThumbStrip = !g_viewState.showThumbStrip;
-                        SaveSettings();
-                        StartStripAnim(hwnd);
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                        return 0;
-                    }
-                }
-
-                // Thumbnail tıklaması — offset kadar navigasyon
-                int offset = g_renderer->GetThumbClickOffset(mx, my);
-                if (offset != INT_MIN && offset != 0 && g_navigator && !g_navigator->empty())
-                {
-                    const std::wstring& path = g_navigator->jump(offset);
-                    NavigateTo(hwnd, path);
-                }
-            }
-            return 0;
-        }
-
-        // Panel alanı tıklaması — date toggle ve GPS link kontrol edilir
-        if (g_clickInPanel)
-        {
-            g_clickInPanel = false;
-            float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
-            if (delta < 5.0f && g_renderer)
-            {
-                // Date toggle
-                if (g_renderer->IsDateToggleVisible())
-                {
-                    D2D1_RECT_F r = g_renderer->GetDateToggleRect();
-                    if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
-                    {
-                        float midX = (r.left + r.right) * 0.5f;
-                        g_viewState.use12HourTime = (mx >= midX);
-                        SaveSettings();
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                        return 0;
-                    }
-                }
-                // GPS link
-                if (g_renderer->IsGpsLinkVisible() && g_imageInfo.hasGpsDecimal)
-                {
-                    D2D1_RECT_F r = g_renderer->GetGpsLinkRect();
-                    if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
-                    {
-                        wchar_t url[256];
-                        swprintf_s(url,
-                            L"https://maps.google.com/?q=%.6f,%.6f",
-                            g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
-                        ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
-                        return 0;
-                    }
-                }
-                // Kopyala butonu — koordinatları panoya kopyala
-                if (g_renderer->IsMapCopyBtnVisible() && g_imageInfo.hasGpsDecimal)
-                {
-                    D2D1_RECT_F r = g_renderer->GetMapCopyBtnRect();
-                    if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
-                    {
-                        wchar_t coordStr[64];
-                        swprintf_s(coordStr, L"%.6f, %.6f",
-                                   g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
-                        if (OpenClipboard(hwnd))
-                        {
-                            EmptyClipboard();
-                            const size_t bytes = (wcslen(coordStr) + 1) * sizeof(wchar_t);
-                            HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-                            if (hMem)
-                            {
-                                memcpy(GlobalLock(hMem), coordStr, bytes);
-                                GlobalUnlock(hMem);
-                                SetClipboardData(CF_UNICODETEXT, hMem);
-                            }
-                            CloseClipboard();
-                        }
-                        g_renderer->MarkCoordsCopied();
-                        SetTimer(hwnd, kCopyFeedbackTimerID, 1500, nullptr);
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                        return 0;
-                    }
-                }
-                // Harita önizleme tıklaması — OSM haritasını tarayıcıda aç
-                if (g_renderer->IsMapPreviewVisible() && g_imageInfo.hasGpsDecimal)
-                {
-                    D2D1_RECT_F r = g_renderer->GetMapPreviewRect();
-                    if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
-                    {
-                        wchar_t url[256];
-                        swprintf_s(url,
-                            L"https://maps.google.com/?q=%.6f,%.6f",
-                            g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
-                        ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
-                        return 0;
-                    }
-                }
-
-                // Konum onay butonları (Evet / Hayır)
-                if (g_renderer->IsLocationConsentVisible())
-                {
-                    int prevPress = g_viewState.locationConsentPress;
-                    g_viewState.locationConsentPress = 0;
-                    auto inR = [](float x, float y, const D2D1_RECT_F& r) {
-                        return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-                    };
-                    if (inR(mx, my, g_renderer->GetLocationYesRect()))
-                    {
-                        g_viewState.locationConsent = LocationConsent::Enabled;
-                        g_locationConsentAtomic.store(1);
-                        SaveSettings();
-                        // Mevcut fotoğraf için hemen tile + konum çek
-                        if (g_imageInfo.hasGpsDecimal)
-                        {
-                            g_renderer->ClearMapTiles();
-                            StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
-                            if (g_imageInfo.gpsLocationName.empty())
-                                g_imageInfo.gpsLocationName =
-                                    LookupLocationFromCache(g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
-                            if (g_imageInfo.gpsLocationName.empty())
-                            {
-                                const uint64_t gen = g_decodeGeneration.load();
-                                const double   lat = g_imageInfo.gpsLatDecimal;
-                                const double   lon = g_imageInfo.gpsLonDecimal;
-                                std::thread([hwnd, lat, lon, gen]()
-                                {
-                                    auto locName = FetchLocationCached(lat, lon);
-                                    if (!locName.empty() && g_decodeGeneration.load() == gen)
-                                    {
-                                        auto* loc         = new LocationResult{};
-                                        loc->locationName = std::move(locName);
-                                        loc->generation   = gen;
-                                        PostMessage(hwnd, WM_LOCATION_DONE, 0,
-                                                    reinterpret_cast<LPARAM>(loc));
-                                    }
-                                }).detach();
-                            }
-                        }
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                        return 0;
-                    }
-                    if (inR(mx, my, g_renderer->GetLocationNoRect()))
-                    {
-                        g_viewState.locationConsent = LocationConsent::Disabled;
-                        g_locationConsentAtomic.store(2);
-                        SaveSettings();
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                        return 0;
-                    }
-                    if (prevPress != 0)
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                }
-
-                // Konum toggle linki (Kapat / Aç)
-                if (g_renderer->IsLocationToggleVisible())
-                {
-                    D2D1_RECT_F r = g_renderer->GetLocationToggleRect();
-                    if (mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom)
-                    {
-                        if (g_viewState.locationConsent == LocationConsent::Enabled)
-                        {
-                            g_viewState.locationConsent = LocationConsent::Disabled;
-                            g_locationConsentAtomic.store(2);
-                        }
-                        else if (g_viewState.locationConsent == LocationConsent::Disabled)
-                        {
-                            g_viewState.locationConsent = LocationConsent::Enabled;
-                            g_locationConsentAtomic.store(1);
-                            // Mevcut fotoğraf için hemen tile + konum çek
-                            if (g_imageInfo.hasGpsDecimal)
-                            {
-                                g_renderer->ClearMapTiles();
-                                StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
-                                if (g_imageInfo.gpsLocationName.empty())
-                                    g_imageInfo.gpsLocationName =
-                                        LookupLocationFromCache(g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
-                                if (g_imageInfo.gpsLocationName.empty())
-                                {
-                                    const uint64_t gen = g_decodeGeneration.load();
-                                    const double   lat = g_imageInfo.gpsLatDecimal;
-                                    const double   lon = g_imageInfo.gpsLonDecimal;
-                                    std::thread([hwnd, lat, lon, gen]()
-                                    {
-                                        auto locName = FetchLocationCached(lat, lon);
-                                        if (!locName.empty() && g_decodeGeneration.load() == gen)
-                                        {
-                                            auto* loc         = new LocationResult{};
-                                            loc->locationName = std::move(locName);
-                                            loc->generation   = gen;
-                                            PostMessage(hwnd, WM_LOCATION_DONE, 0,
-                                                        reinterpret_cast<LPARAM>(loc));
-                                        }
-                                    }).detach();
-                                }
-                            }
-                        }
-                        SaveSettings();
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                        return 0;
-                    }
-                }
-            }
-            return 0;
-        }
-
-        // Delete button tıklaması
-        if (g_clickIsDeleteBtn)
-        {
-            g_viewState.deleteBtnPressed = false;
-            float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
-            if (delta < 5.0f)
-                DoDelete(hwnd);
-            else
-                InvalidateRect(hwnd, nullptr, FALSE);
-            g_clickIsDeleteBtn = false;
-            return 0;
-        }
-
-        // Info button tıklaması
-        if (g_clickIsInfoButton)
-        {
-            float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
-            if (delta < 5.0f)
-            {
-                g_viewState.showInfoPanel = !g_viewState.showInfoPanel;
-                SaveSettings();
-                StartPanelAnim(hwnd);
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            g_clickIsInfoButton = false;
-            return 0;
-        }
-
-        if (g_mouseInArrowZone && wasDragging && g_navigator && !g_navigator->empty())
-        {
-            // Manhattan mesafesi < 5px → gerçek tıklama (sürükleme değil)
-            float delta = fabsf(mx - g_mouseDownX) + fabsf(my - g_mouseDownY);
-            if (delta < 5.0f)
-            {
-                // Pan birikimini geri al (navigate olacak, pan değil)
-                g_viewState.panX = g_panAtDragStartX;
-                g_viewState.panY = g_panAtDragStartY;
-
-                const std::wstring& path = g_clickIsLeft
-                    ? g_navigator->prev()
-                    : g_navigator->next();
-                NavigateTo(hwnd, path);
-            }
-        }
-
-        g_mouseInArrowZone = false;
-        return 0;
-    }
+        return On_WM_LBUTTONUP(hwnd, lParam);
 
     case WM_LBUTTONDBLCLK:
-    {
-        float cx = static_cast<float>(GET_X_LPARAM(lParam));
-        float cy = static_cast<float>(GET_Y_LPARAM(lParam));
-
-        // Herhangi bir modal dialog açıksa çift tıklamayı normal tıklama olarak ilet
-        if (g_viewState.showResizeDialog || g_viewState.showRotateFreeDialog ||
-            g_viewState.showCropDialog   || g_viewState.showDeleteConfirmDialog ||
-            g_viewState.showUnsavedWarningDialog)
-            return SendMessage(hwnd, WM_LBUTTONDOWN, wParam, lParam);
-
-        // Edit toolbar butonlarında çift tıklamayı engelle — hızlı ardışık döndürme desteği
-        if (g_renderer && g_renderer->IsEditToolbarVisible() && !g_viewState.editIsAnimated)
-        {
-            D2D1_RECT_F rL    = g_renderer->GetEditBtnRotLRect();
-            D2D1_RECT_F rR    = g_renderer->GetEditBtnRotRRect();
-            D2D1_RECT_F rMore = g_renderer->GetEditBtnMoreRect();
-            D2D1_RECT_F rFr   = g_renderer->GetEditBtnRotFreeRect();
-            D2D1_RECT_F rRz   = g_renderer->GetEditBtnResizeRect();
-            D2D1_RECT_F rCr   = g_renderer->GetEditBtnCropRect();
-            if ((cx >= rL.left && cx <= rL.right && cy >= rL.top && cy <= rL.bottom) ||
-                (cx >= rR.left && cx <= rR.right && cy >= rR.top && cy <= rR.bottom))
-            {
-                // İkinci tık: LBUTTONDOWN gibi işle — hemen döndür
-                if (cx >= rL.left && cx <= rL.right && cy >= rL.top && cy <= rL.bottom)
-                    DoRotateCCW(hwnd);
-                else
-                    DoRotateCW(hwnd);
-                return 0;
-            }
-            // More/RotFree/Resize/Crop: çift tıklamayı normal tıklama olarak ilet
-            if ((cx >= rMore.left && cx <= rMore.right && cy >= rMore.top && cy <= rMore.bottom) ||
-                (cx >= rFr.left   && cx <= rFr.right   && cy >= rFr.top   && cy <= rFr.bottom)   ||
-                (cx >= rRz.left   && cx <= rRz.right   && cy >= rRz.top   && cy <= rRz.bottom)   ||
-                (cx >= rCr.left   && cx <= rCr.right   && cy >= rCr.top   && cy <= rCr.bottom))
-                return SendMessage(hwnd, WM_LBUTTONDOWN, wParam, lParam);
-        }
-
-        // Save bar butonlarında çift tıklamayı normal tıklama olarak ilet
-        if (g_renderer && g_renderer->IsSaveBarVisible() && g_viewState.editDirty)
-        {
-            D2D1_RECT_F rSave    = g_renderer->GetSaveBarSaveRect();
-            D2D1_RECT_F rDiscard = g_renderer->GetSaveBarDiscardRect();
-            D2D1_RECT_F rSaveAs  = g_renderer->GetSaveBarSaveAsRect();
-            if ((cx >= rSave.left    && cx <= rSave.right    && cy >= rSave.top    && cy <= rSave.bottom)    ||
-                (cx >= rDiscard.left && cx <= rDiscard.right && cy >= rDiscard.top && cy <= rDiscard.bottom) ||
-                (cx >= rSaveAs.left  && cx <= rSaveAs.right  && cy >= rSaveAs.top  && cy <= rSaveAs.bottom))
-                return SendMessage(hwnd, WM_LBUTTONDOWN, wParam, lParam);
-        }
-
-        // Ok zone'da çift tıklamayı engelle — navigasyon zaten birinci LBUTTONUP'ta gerçekleşti
-        if (HitTestArrow(hwnd, cx, cy, g_viewState.panelAnimWidth) != ArrowZone::None)
-            return 0;
-
-        // Info button üzerine çift tıklandığında zoom yapma
-        if (HitTestInfoButton(hwnd, cx, cy, g_viewState.panelAnimWidth))
-            return 0;
-
-        // Panel alanında çift tıklamayı engelle
-        if (g_viewState.panelAnimWidth > 0.0f)
-        {
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            if (cx >= static_cast<float>(rc.right) - g_viewState.panelAnimWidth)
-                return 0;
-        }
-
-        // Strip alanında çift tıklamayı engelle
-        if (g_viewState.stripAnimHeight > 0.0f)
-        {
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            if (cy >= static_cast<float>(rc.bottom) - g_viewState.stripAnimHeight)
-                return 0;
-        }
-
-        // Toggle pill üzerinde çift tıklamayı engelle
-        if (g_renderer && g_renderer->IsStripToggleVisible())
-        {
-            D2D1_RECT_F tr = g_renderer->GetStripToggleRect();
-            if (cx >= tr.left && cx <= tr.right && cy >= tr.top && cy <= tr.bottom)
-                return 0;
-        }
-
-        if (fabsf(g_viewState.zoomFactor - 1.0f) < 0.02f &&
-            fabsf(g_viewState.zoomTarget - 1.0f) < 0.02f)
-        {
-            ApplyZoom(hwnd, cx, cy, 2.5f);
-        }
-        else
-        {
-            // Zoom/pan sıfırla — animasyonlu olarak fit-to-window'a dön
-            g_viewState.zoomTarget = 1.0f;
-            g_viewState.panXTarget = 0.0f;
-            g_viewState.panYTarget = 0.0f;
-            StartZoomAnim(hwnd);
-        }
-
-        ShowZoomIndicator(hwnd);
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return 0;
-    }
+        return On_WM_LBUTTONDBLCLK(hwnd, wParam, lParam);
 
     case WM_SETCURSOR:
         if (LOWORD(lParam) == HTCLIENT && g_renderer && g_renderer->IsGpsLinkVisible())
@@ -3657,449 +4287,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 1;
 
     case WM_KEYDOWN:
-        ResetIndexIdleTimer(hwnd);
-
-        // Kırpma modu açıksa — Escape=kapat, Enter=uygula
-        if (g_viewState.showCropDialog)
-        {
-            if (wParam == VK_ESCAPE)
-            {
-                g_viewState.showCropDialog    = false;
-                g_viewState.cropDlgHoverBtn   = 0;
-                g_viewState.cropDlgPressedBtn = 0;
-                g_cropDragging   = false;
-                g_cropDragHandle = 0;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            else if (wParam == VK_RETURN)
-                DoApplyCrop(hwnd);
-            return 0;
-        }
-
-        // Serbest döndürme dialogu açıksa — Escape=kapat, Enter=uygula, ←/→=ince ayar
-        if (g_viewState.showRotateFreeDialog)
-        {
-            auto clamp45 = [](float a) { return a < -45.0f ? -45.0f : (a > 45.0f ? 45.0f : a); };
-            if (wParam == VK_ESCAPE)
-            {
-                g_viewState.showRotateFreeDialog  = false;
-                g_viewState.rotateFreeDlgHoverBtn = 0;
-                g_viewState.rotateFreeDlgPressBtn = 0;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            else if (wParam == VK_RETURN)
-                DoApplyRotateFree(hwnd);
-            else if (wParam == VK_LEFT)
-            {
-                float step = (GetKeyState(VK_SHIFT) & 0x8000) ? 1.0f : 0.1f;
-                g_viewState.rotateFreeAngle = clamp45(g_viewState.rotateFreeAngle - step);
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            else if (wParam == VK_RIGHT)
-            {
-                float step = (GetKeyState(VK_SHIFT) & 0x8000) ? 1.0f : 0.1f;
-                g_viewState.rotateFreeAngle = clamp45(g_viewState.rotateFreeAngle + step);
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            return 0;
-        }
-
-        // Resize dialogu açıksa — Escape ile kapat, Enter ile uygula
-        if (g_viewState.showResizeDialog)
-        {
-            if (wParam == VK_ESCAPE)
-            {
-                g_viewState.showResizeDialog   = false;
-                g_viewState.resizeDlgHoverBtn  = 0;
-                g_viewState.resizeDlgPressedBtn = 0;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            else if (wParam == VK_RETURN)
-                DoResizeConfirmed(hwnd);
-            return 0;
-        }
-
-        // Silme dialogu açıksa — klavye ile de kontrol edilebilir
-        if (g_viewState.showDeleteConfirmDialog || g_viewState.showUnsavedWarningDialog)
-        {
-            if (wParam == VK_ESCAPE)
-            {
-                g_viewState.showDeleteConfirmDialog  = false;
-                g_viewState.showUnsavedWarningDialog = false;
-                g_viewState.deleteDlgHoverBtn        = 0;
-                g_viewState.deleteDlgPressedBtn      = 0;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            else if (wParam == VK_RETURN)
-            {
-                bool isWarning = g_viewState.showUnsavedWarningDialog;
-                g_viewState.showDeleteConfirmDialog  = false;
-                g_viewState.showUnsavedWarningDialog = false;
-                g_viewState.deleteDlgHoverBtn        = 0;
-                g_viewState.deleteDlgPressedBtn      = 0;
-                if (!isWarning)
-                    DoDeleteConfirmed(hwnd);
-                else
-                    InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            return 0;
-        }
-
-        switch (wParam)
-        {
-        case VK_ESCAPE:
-            DestroyWindow(hwnd);
-            break;
-
-        case 'W':
-            if (GetKeyState(VK_CONTROL) & 0x8000)
-                DestroyWindow(hwnd);
-            break;
-
-        case 'I':
-            g_viewState.showInfoPanel = !g_viewState.showInfoPanel;
-            SaveSettings();
-            StartPanelAnim(hwnd);
-            InvalidateRect(hwnd, nullptr, FALSE);
-            break;
-
-        case 'T':
-            g_viewState.use12HourTime = !g_viewState.use12HourTime;
-            SaveSettings();
-            InvalidateRect(hwnd, nullptr, FALSE);
-            break;
-
-        case 'F':
-            g_viewState.showThumbStrip = !g_viewState.showThumbStrip;
-            SaveSettings();
-            StartStripAnim(hwnd);
-            InvalidateRect(hwnd, nullptr, FALSE);
-            break;
-
-        case VK_LEFT:
-            if (GetKeyState(VK_CONTROL) & 0x8000)
-                DoRotateCCW(hwnd);
-            else if (g_navigator && !g_navigator->empty())
-                NavigateTo(hwnd, g_navigator->prev());
-            break;
-
-        case VK_RIGHT:
-            if (GetKeyState(VK_CONTROL) & 0x8000)
-                DoRotateCW(hwnd);
-            else if (g_navigator && !g_navigator->empty())
-                NavigateTo(hwnd, g_navigator->next());
-            break;
-
-        case VK_OEM_4:  // '[' — 90° sola döndür
-            DoRotateCCW(hwnd);
-            break;
-
-        case VK_OEM_6:  // ']' — 90° sağa döndür
-            DoRotateCW(hwnd);
-            break;
-
-        case VK_DELETE:  // Sil — Geri Dönüşüm Kutusu'na taşı
-            DoDelete(hwnd);
-            break;
-        }
-        return 0;
+        return On_WM_KEYDOWN(hwnd, wParam);
 
     case WM_TIMER:
-        if (wParam == kZoomIndicatorTimerID)
-        {
-            // 1.5s doldu — fade animasyonunu başlat
-            KillTimer(hwnd, kZoomIndicatorTimerID);
-            QueryPerformanceCounter(&g_zoomFadeLastTime);
-            SetTimer(hwnd, kZoomFadeTimerID, kAnimIntervalMs, nullptr);
-        }
-        else if (wParam == kZoomFadeTimerID)
-        {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            float dt = static_cast<float>(now.QuadPart - g_zoomFadeLastTime.QuadPart)
-                       / static_cast<float>(g_qpcFreq.QuadPart);
-            g_zoomFadeLastTime = now;
-            dt = min(dt, 0.1f);
-
-            constexpr float kFadeSpeed = 1.5f;
-            g_viewState.zoomIndicatorAlpha -= dt * kFadeSpeed;
-            if (g_viewState.zoomIndicatorAlpha <= 0.0f)
-            {
-                g_viewState.zoomIndicatorAlpha = 0.0f;
-                KillTimer(hwnd, kZoomFadeTimerID);
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (wParam == kTooltipDelayTimerID)
-        {
-            KillTimer(hwnd, kTooltipDelayTimerID);
-            if (g_viewState.editToolbarHoverBtn != 0)
-            {
-                QueryPerformanceCounter(&g_tooltipFadeLastTime);
-                SetTimer(hwnd, kTooltipFadeTimerID, kAnimIntervalMs, nullptr);
-            }
-        }
-        else if (wParam == kTooltipFadeTimerID)
-        {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            float dt = static_cast<float>(now.QuadPart - g_tooltipFadeLastTime.QuadPart)
-                       / static_cast<float>(g_qpcFreq.QuadPart);
-            g_tooltipFadeLastTime = now;
-            dt = min(dt, 0.1f);
-
-            constexpr float kFadeSpeed = 10.0f;  // ~100ms'de tam görünür
-            g_viewState.editToolbarTooltipAlpha += dt * kFadeSpeed;
-            if (g_viewState.editToolbarTooltipAlpha >= 1.0f)
-            {
-                g_viewState.editToolbarTooltipAlpha = 1.0f;
-                KillTimer(hwnd, kTooltipFadeTimerID);
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (wParam == kPanelAnimTimerID)
-        {
-            // Delta-time hesabı (saniye cinsinden) — frame hızından bağımsız animasyon
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            float dt = static_cast<float>(now.QuadPart - g_panelAnimLastTime.QuadPart)
-                       / static_cast<float>(g_qpcFreq.QuadPart);
-            g_panelAnimLastTime = now;
-            dt = min(dt, 0.1f);  // Uygulama duraksamalarında animasyonun sıçramasını önle
-
-            float lerp   = 1.0f - expf(-dt * kPanelAnimSpeed);
-            float target = g_viewState.showInfoPanel ? PanelLayout::Width : 0.0f;
-            float diff   = target - g_viewState.panelAnimWidth;
-            if (fabsf(diff) < 0.5f)
-            {
-                g_viewState.panelAnimWidth = target;
-                KillTimer(hwnd, kPanelAnimTimerID);
-            }
-            else
-            {
-                g_viewState.panelAnimWidth += diff * lerp;
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (wParam == kZoomAnimTimerID)
-        {
-            // Delta-time tabanlı zoom lerp
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            float dt = static_cast<float>(now.QuadPart - g_zoomAnimLastTime.QuadPart)
-                       / static_cast<float>(g_qpcFreq.QuadPart);
-            g_zoomAnimLastTime = now;
-            dt = min(dt, 0.1f);
-
-            float lerp     = 1.0f - expf(-dt * kZoomAnimSpeed);
-            float zoomDiff = g_viewState.zoomTarget - g_viewState.zoomFactor;
-            float panXDiff = g_viewState.panXTarget - g_viewState.panX;
-            float panYDiff = g_viewState.panYTarget - g_viewState.panY;
-
-            if (fabsf(zoomDiff) < 0.0005f && fabsf(panXDiff) < 0.3f && fabsf(panYDiff) < 0.3f)
-            {
-                g_viewState.zoomFactor = g_viewState.zoomTarget;
-                g_viewState.panX       = g_viewState.panXTarget;
-                g_viewState.panY       = g_viewState.panYTarget;
-                KillTimer(hwnd, kZoomAnimTimerID);
-            }
-            else
-            {
-                g_viewState.zoomFactor += zoomDiff * lerp;
-                g_viewState.panX       += panXDiff * lerp;
-                g_viewState.panY       += panYDiff * lerp;
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (wParam == kAnimTimerID)
-        {
-            KillTimer(hwnd, kAnimTimerID);
-            if (g_renderer && g_renderer->IsAnimated())
-            {
-                int nextDur = g_renderer->AdvanceFrame();
-                SetTimer(hwnd, kAnimTimerID, static_cast<UINT>(nextDur), nullptr);
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-        }
-        else if (wParam == kIndexIdleTimerID)
-        {
-            // 5s hareketsizlik doldu — fade animasyonunu başlat
-            KillTimer(hwnd, kIndexIdleTimerID);
-            QueryPerformanceCounter(&g_indexFadeLastTime);
-            SetTimer(hwnd, kIndexFadeTimerID, kAnimIntervalMs, nullptr);
-        }
-        else if (wParam == kIndexFadeTimerID)
-        {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            float dt = static_cast<float>(now.QuadPart - g_indexFadeLastTime.QuadPart)
-                       / static_cast<float>(g_qpcFreq.QuadPart);
-            g_indexFadeLastTime = now;
-            dt = min(dt, 0.1f);
-
-            constexpr float kFadeSpeed = 1.5f;  // saniyede tam opaklık kaybolur
-            g_viewState.indexBarAlpha -= dt * kFadeSpeed;
-            if (g_viewState.indexBarAlpha <= 0.0f)
-            {
-                g_viewState.indexBarAlpha = 0.0f;
-                KillTimer(hwnd, kIndexFadeTimerID);
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (wParam == kStripAnimTimerID)
-        {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            float dt = static_cast<float>(now.QuadPart - g_stripAnimLastTime.QuadPart)
-                       / static_cast<float>(g_qpcFreq.QuadPart);
-            g_stripAnimLastTime = now;
-            dt = min(dt, 0.1f);
-
-            float lerp   = 1.0f - expf(-dt * kStripAnimSpeed);
-            float target = g_viewState.showThumbStrip ? StripLayout::OpenH : 0.0f;
-            float diff   = target - g_viewState.stripAnimHeight;
-            if (fabsf(diff) < 0.5f)
-            {
-                g_viewState.stripAnimHeight = target;
-                KillTimer(hwnd, kStripAnimTimerID);
-            }
-            else
-            {
-                g_viewState.stripAnimHeight += diff * lerp;
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (wParam == kCopyFeedbackTimerID)
-        {
-            KillTimer(hwnd, kCopyFeedbackTimerID);
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (wParam == kEditToolbarIdleTimerID)
-        {
-            // 2s hareketsizlik doldu — fade animasyonunu başlat (sadece dirty değilse)
-            KillTimer(hwnd, kEditToolbarIdleTimerID);
-            if (!g_viewState.editDirty)
-            {
-                QueryPerformanceCounter(&g_editToolbarFadeLastTime);
-                SetTimer(hwnd, kEditToolbarFadeTimerID, kAnimIntervalMs, nullptr);
-            }
-        }
-        else if (wParam == kEditToolbarFadeTimerID)
-        {
-            if (g_viewState.editDirty)
-            {
-                // Dirty modda toolbar kalıcı görünür — fade iptal
-                KillTimer(hwnd, kEditToolbarFadeTimerID);
-                return 0;
-            }
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            float dt = static_cast<float>(now.QuadPart - g_editToolbarFadeLastTime.QuadPart)
-                       / static_cast<float>(g_qpcFreq.QuadPart);
-            g_editToolbarFadeLastTime = now;
-            dt = min(dt, 0.1f);
-
-            constexpr float kFadeSpeed = 2.0f;
-            g_viewState.editToolbarAlpha -= dt * kFadeSpeed;
-            if (g_viewState.editToolbarAlpha <= 0.0f)
-            {
-                g_viewState.editToolbarAlpha = 0.0f;
-                KillTimer(hwnd, kEditToolbarFadeTimerID);
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (wParam == kDialogFadeTimerID)
-        {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            float dt = min(static_cast<float>(now.QuadPart - g_dialogFadeLastTime.QuadPart)
-                           / static_cast<float>(g_qpcFreq.QuadPart), 0.1f);
-            g_dialogFadeLastTime = now;
-            float lerp = 1.0f - expf(-dt * kDialogFadeSpeed);
-            g_viewState.dialogAlpha += (1.0f - g_viewState.dialogAlpha) * lerp;
-            if (g_viewState.dialogAlpha >= 0.99f)
-            {
-                g_viewState.dialogAlpha = 1.0f;
-                KillTimer(hwnd, kDialogFadeTimerID);
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (wParam == kSaveBarFadeTimerID)
-        {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            float dt = min(static_cast<float>(now.QuadPart - g_saveBarFadeLastTime.QuadPart)
-                           / static_cast<float>(g_qpcFreq.QuadPart), 0.1f);
-            g_saveBarFadeLastTime = now;
-            float lerp = 1.0f - expf(-dt * kSaveBarFadeSpeed);
-            g_viewState.saveBarAlpha += (1.0f - g_viewState.saveBarAlpha) * lerp;
-            if (g_viewState.saveBarAlpha >= 0.99f)
-            {
-                g_viewState.saveBarAlpha = 1.0f;
-                KillTimer(hwnd, kSaveBarFadeTimerID);
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (wParam == kEditMoreFadeTimerID)
-        {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            float dt = min(static_cast<float>(now.QuadPart - g_editMoreFadeLastTime.QuadPart)
-                           / static_cast<float>(g_qpcFreq.QuadPart), 0.1f);
-            g_editMoreFadeLastTime = now;
-            float lerp   = 1.0f - expf(-dt * kEditMoreFadeSpeed);
-            float target = g_viewState.editMoreExpanded ? 1.0f : 0.0f;
-            g_viewState.editMoreAlpha += (target - g_viewState.editMoreAlpha) * lerp;
-            bool done = g_viewState.editMoreExpanded
-                        ? (g_viewState.editMoreAlpha >= 0.99f)
-                        : (g_viewState.editMoreAlpha <= 0.01f);
-            if (done)
-            {
-                g_viewState.editMoreAlpha = target;
-                KillTimer(hwnd, kEditMoreFadeTimerID);
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        else if (wParam == kDirChangeTimerID)
-        {
-            KillTimer(hwnd, kDirChangeTimerID);
-            if (g_navigator && !g_navigator->empty())
-            {
-                std::wstring currentPath = g_navigator->current();
-                bool currentExists =
-                    GetFileAttributesW(currentPath.c_str()) != INVALID_FILE_ATTRIBUTES;
-
-                g_navigator->refresh();
-
-                if (g_navigator->empty())
-                {
-                    // Klasördeki tüm resimler silindi
-                    if (g_renderer) { g_renderer->ClearImage(); g_renderer->SetStripSlots({}, 0); }
-                    g_viewState = ViewState{};
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-                else
-                {
-                    g_viewState.imageIndex = g_navigator->index() + 1;
-                    g_viewState.imageTotal = g_navigator->total();
-
-                    if (!currentExists && !g_viewState.editDirty)
-                    {
-                        // Geçerli dosya silindi, kaydedilmemiş değişiklik yok → komşuya geç
-                        NavigateTo(hwnd, g_navigator->current());
-                    }
-                    else
-                    {
-                        // Listeye dosya eklendi/silindi ama geçerli dosya hâlâ mevcut
-                        ++g_thumbCancel;
-                        UpdateStripSlots(hwnd);
-                        TriggerThumbFetches(hwnd);
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                    }
-                }
-            }
-        }
-        return 0;
+        return On_WM_TIMER(hwnd, wParam);
 
     case WM_FILE_CHANGED:
         // Watcher thread'den gelen bildirim — debounce: 200ms sonra işle
@@ -4107,188 +4298,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_SAVE_DONE:
-    {
-        auto* r = reinterpret_cast<SaveDoneResult*>(lParam);
-        g_isSaving.store(false);
-
-        if (r->success)
-        {
-            if (r->isSaveAs) {
-                g_edit.filePath = r->savedPath;
-                g_edit.format   = r->format;
-            }
-            g_edit.isDirty        = false;
-            g_viewState.editDirty = false;
-            g_viewState.saveBarAlpha = 0.0f;
-            KillTimer(hwnd, kSaveBarFadeTimerID);
-            g_viewState.editToolbarAlpha = 1.0f;
-            KillTimer(hwnd, kEditToolbarFadeTimerID);
-            KillTimer(hwnd, kEditToolbarIdleTimerID);
-            SetTimer(hwnd, kEditToolbarIdleTimerID, 2000, nullptr);
-
-            // Meta cache: eski girdi temizle, güncel bilgiyi yaz
-            {
-                std::lock_guard<std::mutex> lk(g_metaCacheMutex);
-                g_metaCache.erase(r->savedPath);
-                if (r->isSaveAs && r->origPath != r->savedPath)
-                    g_metaCache.erase(r->origPath);
-                ImageInfo updatedMeta = g_imageInfo;
-                updatedMeta.format    = r->format;
-                g_metaCache[r->savedPath] = std::move(updatedMeta);
-            }
-
-            // Prefetch cache'i güncelle: eski girdi temizle, düzenlenmiş pikselleri ekle
-            {
-                std::lock_guard<std::mutex> lk(g_cacheMutex);
-                g_decodeCache.erase(r->savedPath);
-                if (r->isSaveAs && r->origPath != r->savedPath)
-                    g_decodeCache.erase(r->origPath);
-
-                // Kaydedilen pikselleri cache'e ekle — geri navigasyonda anında yüklenir
-                if (!g_edit.pixels.empty() && g_edit.width > 0 && g_edit.height > 0)
-                {
-                    if (g_decodeCache.size() >= kCacheMaxSize)
-                    {
-                        auto oldest = g_decodeCache.begin();
-                        delete oldest->second;
-                        g_decodeCache.erase(oldest);
-                    }
-                    auto* cached        = new DecodeResult();
-                    cached->path        = r->savedPath;
-                    cached->pixels      = g_edit.pixels;  // BGRA pre-multiplied
-                    cached->width       = g_edit.width;
-                    cached->height      = g_edit.height;
-                    cached->info        = g_imageInfo;
-                    cached->info.format = r->format;
-                    g_decodeCache[r->savedPath] = cached;
-                }
-            }
-
-            // Filmstrip thumbnail'ini güncel (döndürülmüş) piksellerden oluştur
-            if (g_renderer && !g_edit.pixels.empty() && g_edit.width > 0 && g_edit.height > 0)
-            {
-                constexpr UINT kTargetH = static_cast<UINT>(StripLayout::ThumbH);
-                const float aspect = static_cast<float>(g_edit.width) / static_cast<float>(g_edit.height);
-                const UINT  thumbH = kTargetH;
-                const UINT  thumbW = max(1u, static_cast<UINT>(thumbH * aspect));
-                std::vector<uint8_t> tp(static_cast<size_t>(thumbW) * thumbH * 4);
-                for (UINT dy = 0; dy < thumbH; ++dy)
-                    for (UINT dx = 0; dx < thumbW; ++dx)
-                    {
-                        UINT sy = dy * g_edit.height / thumbH;
-                        UINT sx = dx * g_edit.width  / thumbW;
-                        const uint8_t* s = &g_edit.pixels[(static_cast<size_t>(sy) * g_edit.width + sx) * 4];
-                        uint8_t*       d = &tp[(static_cast<size_t>(dy) * thumbW + dx) * 4];
-                        d[0]=s[0]; d[1]=s[1]; d[2]=s[2]; d[3]=s[3];
-                    }
-                g_renderer->LoadThumbnail(r->savedPath, tp.data(), thumbW, thumbH);
-            }
-        }
-        delete r;
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return 0;
-    }
+        return On_WM_SAVE_DONE(hwnd, lParam);
 
     case WM_DECODE_DONE:
-    {
-        auto* result = reinterpret_cast<DecodeResult*>(lParam);
-
-        if (result->generation == g_decodeGeneration.load() && g_renderer)
-        {
-            // WM_META_DONE GPS'i zaten set ettiyse tile fetch başlatıldı — tekrarlama
-            const bool tilesAlreadyStarted = g_imageInfo.hasGpsDecimal;
-
-            ApplyDecodeResult(hwnd, result);
-            // Decode tamamlandı — komşuları arka planda yükle
-            TriggerPrefetch();
-            TriggerLocationPrefetch();
-            // Strip slot'larını güncelle (ilk açılışta NavigateTo çağrılmaz, burada yapılır)
-            UpdateStripSlots(hwnd);
-            TriggerThumbFetches(hwnd);
-            // GPS varsa OSM tile'larını arka planda çek (META_DONE başlatmadıysa, onay varsa)
-            if (g_imageInfo.hasGpsDecimal && !tilesAlreadyStarted
-                && g_viewState.locationConsent == LocationConsent::Enabled)
-                StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
-        }
-
-        delete result;
-        return 0;
-    }
+        return On_WM_DECODE_DONE(hwnd, lParam);
 
     case WM_META_DONE:
-    {
-        auto* meta = reinterpret_cast<MetaResult*>(lParam);
-        if (meta->generation == g_decodeGeneration.load())
-        {
-            // filename ve fileSizeBytes NavigateTo tarafından zaten set edildi; koru.
-            meta->info.filename      = g_imageInfo.filename;
-            meta->info.fileSizeBytes = g_imageInfo.fileSizeBytes;
-            g_imageInfo = std::move(meta->info);
-            // GPS varsa OSM tile'larını hemen başlat — yalnızca kullanıcı onayı varsa
-            if (g_imageInfo.hasGpsDecimal && g_viewState.locationConsent == LocationConsent::Enabled)
-                StartTileFetches(hwnd, g_imageInfo.gpsLatDecimal, g_imageInfo.gpsLonDecimal);
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        delete meta;
-        return 0;
-    }
+        return On_WM_META_DONE(hwnd, lParam);
 
     case WM_LOCATION_DONE:
-    {
-        auto* loc = reinterpret_cast<LocationResult*>(lParam);
-        if (loc->generation == g_decodeGeneration.load())
-        {
-            g_imageInfo.gpsLocationName = std::move(loc->locationName);
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        delete loc;
-        return 0;
-    }
+        return On_WM_LOCATION_DONE(hwnd, lParam);
 
     case WM_PREVIEW_DONE:
-    {
-        auto* prev = reinterpret_cast<PreviewResult*>(lParam);
-        if (prev->generation == g_decodeGeneration.load()
-            && g_renderer && !prev->pixels.empty())
-        {
-            // Gömülü HEIC thumbnail'i geçici olarak göster; WM_DECODE_DONE tam görseli yazar
-            g_renderer->LoadImageFromPixels(
-                prev->pixels.data(), prev->width, prev->height, L"");
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        delete prev;
-        return 0;
-    }
+        return On_WM_PREVIEW_DONE(hwnd, lParam);
 
     case WM_THUMB_DONE:
-    {
-        auto* result = reinterpret_cast<ThumbResult*>(lParam);
-        // Token kontrolü yok: geç gelen yavaş HEIC decode sonuçları da cache'e alınır.
-        // LRU eviction (ThumbCacheMax=20) belleği sınırlı tutar.
-        if (g_renderer && !result->pixels.empty())
-        {
-            g_renderer->LoadThumbnail(result->path,
-                                      result->pixels.data(),
-                                      result->width,
-                                      result->height);
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        delete result;
-        return 0;
-    }
+        return On_WM_THUMB_DONE(hwnd, lParam);
 
     case WM_TILE_DONE:
-    {
-        auto* result = reinterpret_cast<TileFetchResult*>(lParam);
-        if (result->cancelToken == g_tileCancel.load() && g_renderer && !result->pixels.empty())
-        {
-            g_renderer->UploadMapTileRaw(result->zoom, result->x, result->y,
-                                         result->pixels.data(), result->width, result->height);
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        delete result;
-        return 0;
-    }
+        return On_WM_TILE_DONE(hwnd, lParam);
 
     case WM_SETTINGCHANGE:
         if (lParam && lstrcmpW(reinterpret_cast<LPCWSTR>(lParam), L"ImmersiveColorSet") == 0)
@@ -4296,46 +4324,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_DESTROY:
-        SaveWindowPlacement(hwnd);
-        ++g_decodeGeneration;
-        // Prefetch thread'leri g_prefetchDesired üzerinden kontrol edilir
-        { std::lock_guard<std::mutex> lk(g_prefetchDesiredMutex); g_prefetchDesired.clear(); }
-        ++g_thumbCancel;     // Tüm thumbnail decode thread'lerini durdur
-        ++g_tileCancel;      // Tüm tile fetch thread'lerini durdur
-        if (g_decodeThread.joinable())
-            g_decodeThread.detach();
-        KillTimer(hwnd, kZoomIndicatorTimerID);
-        KillTimer(hwnd, kPanelAnimTimerID);
-        KillTimer(hwnd, kAnimTimerID);
-        KillTimer(hwnd, kZoomAnimTimerID);
-        KillTimer(hwnd, kStripAnimTimerID);
-        KillTimer(hwnd, kIndexIdleTimerID);
-        KillTimer(hwnd, kIndexFadeTimerID);
-        KillTimer(hwnd, kZoomFadeTimerID);
-        KillTimer(hwnd, kCopyFeedbackTimerID);
-        KillTimer(hwnd, kEditToolbarIdleTimerID);
-        KillTimer(hwnd, kEditToolbarFadeTimerID);
-        KillTimer(hwnd, kTooltipDelayTimerID);
-        KillTimer(hwnd, kTooltipFadeTimerID);
-        KillTimer(hwnd, kDialogFadeTimerID);
-        KillTimer(hwnd, kSaveBarFadeTimerID);
-        KillTimer(hwnd, kEditMoreFadeTimerID);
-        KillTimer(hwnd, kDirChangeTimerID);
-        StopLocationPrefetchThread();
-        SaveLocationCache();
-        StopDirectoryWatcher();
-        timeEndPeriod(1);
-        // Prefetch cache'ini temizle
-        {
-            std::lock_guard<std::mutex> lock(g_cacheMutex);
-            for (auto& [path, result] : g_decodeCache)
-                delete result;
-            g_decodeCache.clear();
-        }
-        delete g_navigator; g_navigator = nullptr;
-        delete g_renderer;  g_renderer  = nullptr;
-        PostQuitMessage(0);
-        return 0;
+        return On_WM_DESTROY(hwnd);
     }
 
     return DefWindowProc(hwnd, msg, wParam, lParam);
