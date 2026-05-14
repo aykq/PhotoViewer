@@ -113,7 +113,10 @@ public:
                                         &pBits, nullptr, 0);
         if (!hbmp || !pBits) return E_OUTOFMEMORY;
 
-        if (pixels.size() < static_cast<size_t>(w) * h * 4) return E_FAIL;
+        if (pixels.size() < static_cast<size_t>(w) * h * 4) {
+            DeleteObject(hbmp);
+            return E_FAIL;
+        }
         memcpy(pBits, pixels.data(), static_cast<size_t>(w) * h * 4);
 
         *phbmp    = hbmp;
