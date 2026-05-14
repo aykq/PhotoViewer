@@ -86,9 +86,10 @@
 taskkill /f /im dllhost.exe 2&gt;nul
 exit 0</Command>
     </PreBuildEvent>
-    <!-- DLL sonrası otomatik kayıt -->
+    <!-- DLL sonrası otomatik kayıt (yönetici yetkisi gerekir; yoksa uyarı verir, build başarısız olmaz) -->
     <PostBuildEvent>
-      <Command>regsvr32 /s "$(TargetPath)"</Command>
+      <Command>regsvr32 /s "$(TargetPath)" || echo [LuminaShell] UYARI: DLL kaydi basarisiz - VS'yi Yonetici olarak calistirin.
+exit 0</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <!-- Kaynak dosyalar -->

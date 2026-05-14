@@ -430,8 +430,9 @@ static void StartDecode(HWND hwnd, const std::wstring& path)
         const double gpsLon = result->info.gpsLonDecimal;
 
         CoUninitialize();
-        PostMessage(hwnd, WM_DECODE_DONE, 0, reinterpret_cast<LPARAM>(result));
-        result = nullptr;  // sahiplik UI thread'ine geçti
+        if (!PostMessage(hwnd, WM_DECODE_DONE, 0, reinterpret_cast<LPARAM>(result)))
+            delete result;  // pencere yok olduysa sahiplik buraya düşer
+        result = nullptr;
 
         // ── Aşama 3: Nominatim reverse geocoding (görsel zaten göründü) ─────────
         if (hasGps && g_locationConsentAtomic.load() == 1 && g_decodeGeneration.load() == gen)
