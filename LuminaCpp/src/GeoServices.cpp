@@ -109,10 +109,11 @@ std::wstring FetchLocationName(double lat, double lon)
     if (result.empty()) return {};
 
     // UTF-8 → wide string
-    int len = MultiByteToWideChar(CP_UTF8, 0, result.c_str(), -1, nullptr, 0);
+    int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, result.c_str(), -1, nullptr, 0);
     if (len <= 1) return {};
     std::wstring wresult(len - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, result.c_str(), -1, wresult.data(), len);
+    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, result.c_str(), -1, wresult.data(), len - 1))
+        return {};
     return wresult;
 }
 

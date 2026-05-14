@@ -2467,6 +2467,7 @@ static bool SaveImageAVIF(const std::wstring& path, const uint8_t* bgraStraight,
     if (res != AVIF_RESULT_OK) { avifImageDestroy(img); return false; }
 
     avifEncoder* encoder = avifEncoderCreate();
+    if (!encoder) { avifImageDestroy(img); return false; }
     encoder->quality      = 80;
     encoder->qualityAlpha = 100;  // AVIF_QUALITY_LOSSLESS
     encoder->speed        = AVIF_SPEED_DEFAULT;
