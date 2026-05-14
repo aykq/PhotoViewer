@@ -115,7 +115,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           name: "Lumina v${{ steps.version.outputs.VERSION }}"
-          body: ${{ steps.relnotes.outputs.BODY }}
+          body: "${{ steps.relnotes.outputs.BODY }}"
           draft: false
           prerelease: false
           files: |
