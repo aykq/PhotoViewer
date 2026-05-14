@@ -26,10 +26,10 @@ namespace PhotoViewer.Views
         private const double SnapToOneEpsilon = 0.02;
 
         // --- WIN32 API TANIMLAMALARI ---
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
         public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         public const int SW_RESTORE = 9;
