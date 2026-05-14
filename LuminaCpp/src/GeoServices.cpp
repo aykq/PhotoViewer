@@ -175,8 +175,8 @@ std::vector<uint8_t> FetchOsmTile(int zoom, int x, int y)
     DWORD tlsProto = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
     WinHttpSetOption(hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &tlsProto, sizeof(tlsProto));
 
-    // Yönlendirmeleri otomatik takip et
-    DWORD rdPolicy = 2; // WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS
+    // HTTPS→HTTP downgrade yönlendirmelerine izin verme
+    DWORD rdPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
     WinHttpSetOption(hSession, WINHTTP_OPTION_REDIRECT_POLICY, &rdPolicy, sizeof(rdPolicy));
 
     WinHttpSetTimeouts(hSession, 8000, 8000, 15000, 15000);
