@@ -1246,6 +1246,36 @@ static void DrawCropIcon(ID2D1HwndRenderTarget* rt, ID2D1SolidColorBrush* brush,
     rt->DrawLine({cx, cy + gap}, {cx, cy + half - arm * 0.6f}, brush, strokeW * 0.7f);
 }
 
+// Kalem (edit) ikonu — 45° açılı kurşunkalem: gövde + uç + silgi kapağı.
+static void DrawEditIcon(ID2D1HwndRenderTarget* rt, ID2D1SolidColorBrush* brush,
+                          float cx, float cy, float strokeW)
+{
+    constexpr float sq2      = 0.70710678f;
+    constexpr float halfBody = 6.5f;   // kalem gövdesinin merkeze olan yarı uzunluğu
+    constexpr float nibLen   = 3.2f;   // uç (nib) üçgeninin uzunluğu
+    constexpr float bodyHalf = 2.5f;   // kalem gövdesinin yarı genişliği
+
+    // Görsel merkeze hafif sağ-üst kaydırma
+    float ocx = cx + 0.5f, ocy = cy - 0.5f;
+
+    float ex   = ocx + halfBody * sq2,            ey   = ocy - halfBody * sq2;  // silgi ucu (sağ-üst)
+    float nx   = ocx - halfBody * sq2,            ny   = ocy + halfBody * sq2;  // nib başlangıcı (sol-alt)
+    float tipX = ocx - (halfBody + nibLen) * sq2, tipY = ocy + (halfBody + nibLen) * sq2; // uç nokta
+
+    float sx = bodyHalf * sq2, sy = bodyHalf * sq2;  // dik yön ofseti (perpendicular)
+
+    // Gövde yan çizgileri
+    rt->DrawLine({ ex + sx, ey + sy }, { nx + sx, ny + sy }, brush, strokeW);
+    rt->DrawLine({ ex - sx, ey - sy }, { nx - sx, ny - sy }, brush, strokeW);
+
+    // Silgi kapağı (gövdenin sağ-üst ucu)
+    rt->DrawLine({ ex + sx, ey + sy }, { ex - sx, ey - sy }, brush, strokeW);
+
+    // Uç (nib) — iki çizgi birleşerek sivri uca gidiyor
+    rt->DrawLine({ nx + sx, ny + sy }, { tipX, tipY }, brush, strokeW);
+    rt->DrawLine({ nx - sx, ny - sy }, { tipX, tipY }, brush, strokeW);
+}
+
 void Renderer::DrawEditToolbar(const ViewState& vs)
 {
     m_editToolbarVisible = false;
@@ -1272,7 +1302,7 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
     const float collapsedW = kBtnSize * 3.0f + kGap * 2.0f;   // [↺][↻][···]
     const float expandedW  = kBtnSize * 6.0f + kGap * 5.0f;   // [↺][↻][···][↗][⤢][✂]
     const float totalW     = collapsedW + (expandedW - collapsedW) * vs.editMoreAlpha;
-    const float startX     = (availW - totalW) * 0.5f;
+    const float startX     = kMarginTop;   // sol üst köşe, üst marjinle aynı
     const float btnY       = kMarginTop;
 
     const float btn1X = startX;
@@ -1309,19 +1339,14 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
             btn2X + kBtnSize * 0.5f, btnY + kBtnSize * 0.5f, true, kStrokeW);
     }
 
-    // [3] ··· Araçlar (genişlet/daralt)
+    // [3] ✏ Düzenle (genişlet/daralt)
     m_editBtnMoreRect = D2D1::RectF(btn3X, btnY, btn3X + kBtnSize, btnY + kBtnSize);
     {
         D2D1_ROUNDED_RECT rr = { m_editBtnMoreRect, kBtnRadius, kBtnRadius };
         bool moreActive = vs.editBtnMorePressed || vs.editMoreExpanded;
         m_renderTarget->FillRoundedRectangle(rr, moreActive ? m_activeBrush : m_panelBgBrush);
-        float cx = btn3X + kBtnSize * 0.5f;
-        float cy = btnY  + kBtnSize * 0.5f;
-        constexpr float kDotR  = 2.3f;
-        constexpr float kDotSp = 7.5f;
-        m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - kDotSp, cy), kDotR, kDotR), m_whiteBrush);
-        m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx,          cy), kDotR, kDotR), m_whiteBrush);
-        m_renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + kDotSp, cy), kDotR, kDotR), m_whiteBrush);
+        DrawEditIcon(m_renderTarget, m_whiteBrush,
+            btn3X + kBtnSize * 0.5f, btnY + kBtnSize * 0.5f, kStrokeW);
     }
 
     // [4,5,6] Genişletilmiş araçlar — editMoreAlpha ile fade-in
@@ -1379,9 +1404,9 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
     if (vs.editToolbarHoverBtn >= 1 && vs.editToolbarHoverBtn <= 6 && m_btnFormat && m_separatorBrush
         && vs.editToolbarTooltipAlpha > 0.01f)
     {
-        static const wchar_t* kTips[]  = { L"Sola döndür", L"Sağa döndür", L"Araçlar",
+        static const wchar_t* kTips[]  = { L"Sola döndür", L"Sağa döndür", L"Düzenle",
                                             L"Serbest döndür", L"Yeniden boyutlandır", L"Kırp" };
-        static const float    kTipWs[] = { 110.0f, 110.0f, 80.0f, 140.0f, 180.0f, 72.0f };
+        static const float    kTipWs[] = { 110.0f, 110.0f, 85.0f, 140.0f, 180.0f, 72.0f };
         const int   tipIdx = vs.editToolbarHoverBtn - 1;
         const float tipW   = kTipWs[tipIdx];
         const float tipH   = 26.0f;
