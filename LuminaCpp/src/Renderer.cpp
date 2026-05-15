@@ -1579,7 +1579,13 @@ void Renderer::DrawDeleteConfirmDialog(const ViewState& vs, const ImageInfo* inf
     else
     {
         if (info && !info->filename.empty())
-            dynMsg = L"“" + info->filename + L"” dosyasını Geri Dönüşüm Kutusu'na taşımak istediğinize emin misiniz?";
+        {
+            constexpr size_t kMaxDisplay = 40;
+            std::wstring displayName = info->filename;
+            if (displayName.size() > kMaxDisplay)
+                displayName = displayName.substr(0, 20) + L"…" + displayName.substr(displayName.size() - 19);
+            dynMsg = L"“" + displayName + L"” dosyasını Geri Dönüşüm Kutusu'na taşımak istediğinize emin misiniz?";
+        }
         else
             dynMsg = L"Bu fotoğrafı Geri Dönüşüm Kutusu'na taşımak istediğinize emin misiniz?";
         msg = dynMsg.c_str();
