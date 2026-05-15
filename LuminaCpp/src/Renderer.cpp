@@ -289,9 +289,9 @@ void Renderer::DrawNavArrows(const ViewState& vs)
     float availW = sz.width - vs.panelAnimWidth;
     float midY   = sz.height * 0.5f;
 
-    // Floating rounded square oklar — 40×40px, 10px köşe, kenardan 8px boşluk
-    constexpr float kSqSize   = 40.0f;
-    constexpr float kSqRadius = 10.0f;
+    // Floating rounded square oklar — 32×32px, 8px köşe, kenardan 8px boşluk
+    constexpr float kSqSize   = 32.0f;
+    constexpr float kSqRadius = 8.0f;
     constexpr float kSqMargin = 8.0f;
 
     // Sol ok (basılıysa açık tint, değilse koyu)
@@ -1292,7 +1292,7 @@ void Renderer::DrawEditToolbar(const ViewState& vs)
     D2D1_SIZE_F sz   = m_renderTarget->GetSize();
     float availW     = sz.width - vs.panelAnimWidth;
 
-    constexpr float kBtnSize   = 40.0f;
+    constexpr float kBtnSize   = 32.0f;
     constexpr float kBtnRadius = 8.0f;
     constexpr float kGap       = 8.0f;
     constexpr float kMarginTop = 16.0f;
