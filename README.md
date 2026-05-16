@@ -45,7 +45,7 @@ Lumina is a native Windows photo viewer built with C++23, Win32, and Direct2D. I
 | AVIF | `.avif` | ✅ | ✅ |
 
 ## Screenshots
-
+will be added later...
 <!-- screenshot: main viewer -->
 <!-- screenshot: info panel with GPS map -->
 <!-- screenshot: filmstrip bar -->
