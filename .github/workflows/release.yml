@@ -108,6 +108,10 @@ jobs:
           {
             echo 'BODY<<EOF'
             git tag -l --format='%(contents)' "${{ github.ref_name }}"
+            echo ''
+            echo '---'
+            echo ''
+            echo '> **SmartScreen uyarısı alırsanız** → [README\'deki adımlara bakın](https://github.com/AykQ/Lumina#smartscreen-notice).'
             echo EOF
           } >> "$GITHUB_OUTPUT"
 
