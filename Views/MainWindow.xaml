@@ -42,7 +42,7 @@
                     Margin="0"
                     Padding="0"
                     Command="{x:Bind ViewModel.PreviousPhotoCommand}"
-                    ToolTipService.ToolTip="Önceki (←)">
+                    ToolTipService.ToolTip="Previous (←)">
                 <Border Effect="BackdropFilterEffect" EffectProperties="blur(20) opacity(0.5)" Background="Transparent">
                     <FontIcon FontFamily="{StaticResource SymbolThemeFontFamily}"
                               Glyph="&#xE72B;"
@@ -58,7 +58,7 @@
                     Margin="0"
                     Padding="0"
                     Command="{x:Bind ViewModel.NextPhotoCommand}"
-                    ToolTipService.ToolTip="Sonraki (→)">
+                    ToolTipService.ToolTip="Next (→)">
                 <Border Effect="BackdropFilterEffect" EffectProperties="blur(20) opacity(0.5)" Background="Transparent">
                     <FontIcon FontFamily="{StaticResource SymbolThemeFontFamily}"
                               Glyph="&#xE72A;"
@@ -99,7 +99,7 @@
                             Width="48" Height="48"
                             Background="Transparent"
                             BorderThickness="0"
-                            ToolTipService.ToolTip="Bilgileri Göster/Gizle">
+                            ToolTipService.ToolTip="Show/Hide Information">
                         <FontIcon FontFamily="{StaticResource SymbolThemeFontFamily}" Glyph="&#xE946;" FontSize="24" Foreground="White"/>
                     </Button>
                 </Border>

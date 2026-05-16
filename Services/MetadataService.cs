@@ -65,7 +65,7 @@ namespace PhotoViewer.Services
             }
             catch
             {
-                metadataList.Add(new ExifData { Label = "Hata", Value = "Metadata okunamadı." });
+                metadataList.Add(new ExifData { Label = "Error", Value = "Could not read metadata." });
             }
 
             return metadataList;

@@ -99,14 +99,14 @@ namespace PhotoViewer.ViewModels
 
                 if (outcome.Bitmap is null)
                 {
-                    StatusMessage = "Görüntü açılamadı (Windows codec ve ImageMagick bu dosyayı okuyamadı).";
+                    StatusMessage = "Could not open image (Windows codec and ImageMagick could not read this file).";
                     return;
                 }
 
                 DisplayImage = outcome.Bitmap;
 
                 if (outcome.UsedMagickFallback)
-                    StatusMessage = "Windows bu dosyayı doğrudan açamadı; ImageMagick ile gösteriliyor.";
+                    StatusMessage = "Windows could not open this file directly; displaying via ImageMagick.";
                 else
                     StatusMessage = null;
 
@@ -126,7 +126,7 @@ namespace PhotoViewer.ViewModels
             catch (Exception ex)
             {
                 Debug.WriteLine($"LoadPhotoAsync error: {ex}");
-                StatusMessage = "Görüntü yüklenemedi.";
+                StatusMessage = "Could not load image.";
             }
         }
 
